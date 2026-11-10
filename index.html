@@ -1,0 +1,110 @@
+<!doctype html>
+<html lang="ko">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Mini React · Phase 1 검증</title>
+    <style>
+      :root {
+        --paper: #faf9f6;
+        --ink: #243040;
+        --muted: #56616c;
+        --line: #d8dcd9;
+        --accent: #23675b;
+        --error: #a3322a;
+        --area: #ffffff;
+      }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        background: var(--paper);
+        color: var(--ink);
+        font: 16px/1.6 system-ui, sans-serif;
+      }
+      main { max-width: 1100px; margin: auto; padding: 32px 16px 64px; }
+      h1 { font-size: 24px; margin: 0 0 4px; }
+      .lead { color: var(--muted); margin: 0 0 24px; }
+      .areas { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
+      @media (max-width: 720px) { .areas { grid-template-columns: 1fr; } }
+      .label { display: block; font-size: 14px; font-weight: 700; margin-bottom: 4px; }
+      .hint { font-weight: 400; color: var(--muted); }
+      .area {
+        min-height: 240px;
+        padding: 16px;
+        background: var(--area);
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        overflow-wrap: anywhere;
+      }
+      #test-area { border-style: dashed; border-color: var(--accent); }
+      #test-area:focus { outline: 2px solid var(--accent); outline-offset: 2px; }
+      .controls { display: flex; flex-wrap: wrap; gap: 8px; margin: 20px 0 12px; }
+      .controls button {
+        font: inherit;
+        padding: 6px 16px;
+        border: 1px solid var(--accent);
+        border-radius: 6px;
+        background: var(--area);
+        color: var(--accent);
+        cursor: pointer;
+      }
+      .controls #patch-button { background: var(--accent); color: #fff; }
+      .controls button:disabled { opacity: 0.4; cursor: not-allowed; }
+      #status { min-height: 1.6em; margin: 0; font-size: 14px; color: var(--muted); }
+      #status[data-kind='ok'] { color: var(--accent); }
+      #status[data-kind='error'] { color: var(--error); font-weight: 700; }
+
+      /* 샘플 HTML 모양. 두 영역에 똑같이 적용해 구조가 같으면 같아 보이게 한다. */
+      .area .done { text-decoration: line-through; color: var(--muted); }
+      .area .card h2 { margin-top: 0; }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>Phase 1 검증: Virtual DOM → Diff → Patch</h1>
+      <p class="lead">
+        테스트 영역을 직접 고친 뒤 Patch를 누르면, 바뀐 부분만 실제 영역에 반영됩니다.
+        최상위에는 요소 하나만 둘 수 있습니다.
+      </p>
+
+      <div class="areas">
+        <section>
+          <span class="label">실제 영역 <span class="hint">· 지금 화면</span></span>
+          <!-- 샘플 HTML. 페이지 로드 시 이 내용을 VDOM으로 읽어 테스트 영역을 만든다. -->
+          <div id="actual-area" class="area">
+            <section class="card" id="todo"><!-- 할 일 카드: 주석은 VDOM에 없으므로 테스트 영역에 나타나지 않는다 -->
+              <h2>오늘 할 일</h2>
+              <p class="summary">남은 일 <strong>2</strong>개</p>
+              <ul>
+                <li class="done">Virtual DOM 만들기</li>
+                <li>Diff 만들기</li>
+                <li>Patch 만들기</li>
+              </ul>
+              <button type="button" disabled>저장</button>
+              <a href="#todo" title="카드로 이동">자세히</a>
+            </section>
+          </div>
+        </section>
+
+        <section>
+          <span class="label">테스트 영역 <span class="hint">· 원하는 화면으로 직접 편집</span></span>
+          <div id="test-area" class="area" contenteditable="true" spellcheck="false"></div>
+        </section>
+      </div>
+
+      <div class="controls">
+        <button type="button" id="patch-button">Patch</button>
+        <button type="button" id="back-button">뒤로가기</button>
+        <button type="button" id="forward-button">앞으로가기</button>
+      </div>
+      <p id="status" role="status" aria-live="polite"></p>
+    </main>
+
+    <!-- ES 모듈은 file://에서 열리지 않으므로 로컬 서버로 연다. (예: npx serve .) -->
+    <script type="module">
+      import { setupPhase1Page } from './src/phase1Page.js';
+
+      setupPhase1Page();
+    </script>
+  </body>
+</html>
