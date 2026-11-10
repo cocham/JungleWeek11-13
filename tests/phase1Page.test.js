@@ -106,7 +106,7 @@ describe('검증 페이지 — 로드 (R-P1-04·05)', () => {
     expect($('test-area').innerHTML).not.toContain('<!--');
   });
 
-  it('History를 연결하기 전이므로 뒤로가기·앞으로가기는 꺼져 있다', () => {
+  it('처음에는 기록이 초기 화면 하나뿐이므로 뒤로가기·앞으로가기는 꺼져 있다', () => {
     setupPhase1Page();
 
     expect($('back-button').disabled).toBe(true);
@@ -226,7 +226,7 @@ describe('검증 페이지 — 편집과 Patch (R-P1-06·07, History 저장 제�
     expect(newRoot).not.toBe(oldRoot);
     expect(newRoot.tagName).toBe('ARTICLE');
     expect(oldRoot.isConnected).toBe(false);
-    expect($('status').textContent).toBe('1개 변경 반영 — REPLACE []');
+    expect($('status').textContent).toBe('1개 변경 반영 — REPLACE [] (기록 2 / 2)');
 
     inTest('h2').firstChild.nodeValue = '다시 고친 카드';
     clickPatch();
@@ -256,7 +256,7 @@ describe('검증 페이지 — 편집과 Patch (R-P1-06·07, History 저장 제�
     testRoot().normalize();
     clickPatch();
 
-    expect($('status').textContent).toBe('2개 변경 반영 — TEXT [0] · REMOVE [1]');
+    expect($('status').textContent).toBe('2개 변경 반영 — TEXT [0] · REMOVE [1] (기록 2 / 2)');
     expect(domToVdom(actualRoot())).toEqual(domToVdom(testRoot()));
     expect($('actual-area').innerHTML).toBe('<p>ab<!--c--></p>');
   });
@@ -307,5 +307,186 @@ describe('검증 페이지 — 편집과 Patch (R-P1-06·07, History 저장 제�
       expect(inActual('h2').textContent).toBe('A');
       expect(inActual('p').textContent).toMatch(/^할 일/);
     });
+  });
+});
+
+describe('검증 페이지 — History 저장·이동 (R-P1-07·08)', () => {
+  beforeEach(() => {
+    document.body.innerHTML = pageBody;
+    setupPhase1Page();
+  });
+
+  const vdomOfActual = () => domToVdom(actualRoot());
+  const vdomOfTest = () => domToVdom(testRoot());
+  const setText = (selector, text) => {
+    inTest(selector).firstChild.nodeValue = text;
+  };
+  const status = () => $('status').textContent;
+  const buttons = () => ({ back: !$('back-button').disabled, forward: !$('forward-button').disabled });
+
+  // 두 영역이 모두 expected 화면인지 확인한다. (R-P1-08: 둘 다 함께 바뀜)
+  function expectBothAreas(expected) {
+    expect(vdomOfActual()).toEqual(expected);
+    expect(vdomOfTest()).toEqual(expected);
+  }
+
+  it('변경이 있는 Patch만 기록한다: 기록이 둘이 되면 뒤로가기가 켜진다', () => {
+    setText('h2', '내일 할 일');
+    clickPatch();
+
+    expect(status()).toMatch(/\(기록 2 \/ 2\)$/);
+    expect(buttons()).toEqual({ back: true, forward: false });
+  });
+
+  it('변경 없는 Patch와 거부된 Patch는 기록하지 않는다', () => {
+    clickPatch(); // 변경 없음
+    expect(status()).toMatch(/기록도 남기지 않았습니다. \(기록 1 \/ 1\)$/);
+
+    $('test-area').innerHTML = '<h1>a</h1><p>b</p>';
+    clickPatch(); // 거부
+
+    expect(buttons()).toEqual({ back: false, forward: false });
+  });
+
+  it('뒤로가기: 두 영역이 이전 화면이 되고, 실제 영역은 바뀐 노드만 되돌린다', () => {
+    const v0 = vdomOfActual();
+    const strongText = inActual('strong').firstChild;
+    const h2 = inActual('h2');
+    setText('strong', '1');
+    clickPatch();
+
+    $('back-button').click();
+
+    expectBothAreas(v0);
+    // 같은 텍스트 노드의 글자만 되돌렸다. 바뀌지 않은 요소와 주석도 같은 객체로 남는다.
+    expect(inActual('strong').firstChild).toBe(strongText);
+    expect(strongText.nodeValue).toBe('2');
+    expect(inActual('h2')).toBe(h2);
+    expect($('actual-area').innerHTML).toContain('<!-- 할 일 카드');
+    expect(status()).toMatch(/^뒤로 이동: 1개 변경 반영 — TEXT \[.*\] \(기록 1 \/ 2\)$/);
+    expect(buttons()).toEqual({ back: false, forward: true });
+  });
+
+  it('이동한 뒤에도 테스트 영역은 실제 영역과 다른 객체다 (VDOM으로 새로 만든다)', () => {
+    setText('h2', 'X');
+    clickPatch();
+    $('back-button').click();
+
+    const actualNodes = allNodes(actualRoot());
+    for (const node of allNodes(testRoot())) {
+      expect(actualNodes).not.toContain(node);
+    }
+  });
+
+  it('앞으로가기: 되돌렸던 화면으로 두 영역이 다시 바뀐다', () => {
+    setText('strong', '1');
+    clickPatch();
+    const v1 = vdomOfActual();
+
+    $('back-button').click();
+    $('forward-button').click();
+
+    expectBothAreas(v1);
+    expect(status()).toMatch(/^앞으로 이동: 1개 변경 반영 — TEXT \[.*\] \(기록 2 \/ 2\)$/);
+    expect(buttons()).toEqual({ back: true, forward: false });
+  });
+
+  it('여러 번 Patch한 뒤 처음까지 뒤로, 끝까지 앞으로 가면 매 단계 두 영역이 그 기록과 같다', () => {
+    const versions = [vdomOfActual()];
+    setText('h2', 'A');
+    clickPatch();
+    versions.push(vdomOfActual());
+    inTest('li').removeAttribute('class');
+    inTest('ul').appendChild(document.createElement('li')).textContent = '새 일';
+    clickPatch();
+    versions.push(vdomOfActual());
+    $('test-area').innerHTML = '<article><p>완전히 다른 화면</p></article>'; // 루트 교체
+    clickPatch();
+    versions.push(vdomOfActual());
+
+    for (let i = versions.length - 2; i >= 0; i--) {
+      $('back-button').click();
+      expectBothAreas(versions[i]);
+      expect(status()).toMatch(new RegExp(`\\(기록 ${i + 1} / 4\\)$`));
+    }
+    expect(buttons()).toEqual({ back: false, forward: true });
+
+    for (let i = 1; i < versions.length; i++) {
+      $('forward-button').click();
+      expectBothAreas(versions[i]);
+    }
+    expect(buttons()).toEqual({ back: true, forward: false });
+  });
+
+  it('루트를 교체한 기록을 오가도 실제 영역 안 같은 자리에서 루트가 바뀌고, 이어서 Patch할 수 있다', () => {
+    $('test-area').innerHTML = '<article><h2>새 카드</h2></article>';
+    clickPatch();
+
+    $('back-button').click();
+    expect(actualRoot().tagName).toBe('SECTION');
+    expect($('actual-area').querySelectorAll('section, article').length).toBe(1);
+
+    $('forward-button').click();
+    expect(actualRoot().tagName).toBe('ARTICLE');
+
+    setText('h2', '이어서 고침');
+    clickPatch();
+    expect(inActual('h2').textContent).toBe('이어서 고침');
+  });
+
+  it('과거 위치에서 새로 Patch하면 그 뒤 기록은 버려지고 앞으로가기가 꺼진다', () => {
+    const v0 = vdomOfActual();
+    setText('h2', 'v1');
+    clickPatch();
+    const v1 = vdomOfActual();
+    setText('h2', 'v2');
+    clickPatch();
+
+    $('back-button').click(); // v1에 있음 (기록 2 / 3)
+    setText('h2', 'v3');
+    clickPatch();
+
+    expect(status()).toMatch(/\(기록 3 \/ 3\)$/);
+    expect(buttons()).toEqual({ back: true, forward: false });
+    expect(inActual('h2').textContent).toBe('v3');
+
+    $('back-button').click();
+    expectBothAreas(v1);
+    $('back-button').click();
+    expectBothAreas(v0);
+    // v2로 갈 길은 없다: 끝까지 앞으로 가면 v3이다.
+    $('forward-button').click();
+    $('forward-button').click();
+    expect(inActual('h2').textContent).toBe('v3');
+    expect(buttons().forward).toBe(false);
+  });
+
+  it('Patch하지 않은 편집은 이동하면 덮어쓰인다', () => {
+    const v0 = vdomOfActual();
+    setText('h2', 'v1');
+    clickPatch();
+    const v1 = vdomOfActual();
+
+    setText('h2', '반영 안 한 편집');
+    $('back-button').click();
+    expectBothAreas(v0);
+
+    $('forward-button').click();
+    expectBothAreas(v1);
+    expect(inTest('h2').textContent).toBe('v1');
+  });
+
+  it('이동 후 테스트 영역을 고쳐 Patch해도 저장된 과거 화면은 바뀌지 않는다 (스냅샷 독립)', () => {
+    const v0 = vdomOfActual();
+    setText('h2', 'v1');
+    clickPatch();
+
+    $('back-button').click();
+    setText('strong', '9');
+    inTest('li').setAttribute('class', 'changed');
+    clickPatch(); // 기록: [v0, 새 화면]
+
+    $('back-button').click();
+    expectBothAreas(v0);
   });
 });
