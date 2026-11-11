@@ -239,3 +239,21 @@ describe('vdomToDom — 텍스트·요소 구분과 자식 재귀 생성', () =>
     });
   });
 });
+
+describe('vdomToDom — 이벤트 핸들러 붙이기 (Phase 2)', () => {
+  it('events의 핸들러를 실제 요소에 붙인다. 속성으로는 남지 않는다', () => {
+    const calls = [];
+    const node = vdomToDom({
+      type: 'element',
+      tag: 'button',
+      attrs: { class: 'btn' },
+      events: { click: (e) => calls.push(e.type) },
+      children: [],
+    });
+
+    node.click();
+
+    expect(calls).toEqual(['click']);
+    expect(node.outerHTML).toBe('<button class="btn"></button>');
+  });
+});

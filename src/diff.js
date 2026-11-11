@@ -9,6 +9,7 @@
 //         노드 교체   → { type: 'REPLACE', path: [1], node: 새 VDOM 노드 }
 //         자식 추가   → { type: 'ADD', path: [2], node: 새 VDOM 노드 }   (path = 새 트리에서의 위치)
 //         자식 삭제   → { type: 'REMOVE', path: [2] }                   (path = 옛 트리에서의 위치)
+//         이벤트 변경 → { type: 'EVENTS', path: [], set: { click: fn }, remove: ['input'] }  (Phase 2)
 //
 // 적용 순서 약속: patch 배열을 앞에서부터 차례로 적용하면,
 // 각 patch의 path는 "그 시점의 트리"에서 정확한 위치를 가리킨다.
@@ -43,6 +44,12 @@ function walk(oldNode, newNode, path, patches) {
   const attrsPatch = diffAttrs(oldNode.attrs, newNode.attrs, path);
   if (attrsPatch !== null) {
     patches.push(attrsPatch);
+  }
+
+  // Phase 2: 이벤트 핸들러도 속성처럼 비교한다. Phase 1 VDOM에는 events가 없으므로 {}로 본다.
+  const eventsPatch = diffEvents(oldNode.events ?? {}, newNode.events ?? {}, path);
+  if (eventsPatch !== null) {
+    patches.push(eventsPatch);
   }
 
   diffChildren(oldNode.children, newNode.children, path, patches);
@@ -107,4 +114,31 @@ function diffAttrs(oldAttrs, newAttrs, path) {
   }
   // set·remove는 비어 있어도 항상 넣는다. 받는 쪽이 존재 여부를 따로 확인하지 않아도 되게 하려는 것이다.
   return { type: 'ATTRS', path, set, remove };
+}
+
+// 한 요소의 이벤트 핸들러 변화를 EVENTS patch 하나로 모은다. 바뀐 게 없으면 null.
+//   set:    새로 생겼거나 다른 함수로 바뀐 핸들러 { 이벤트 이름: 새 함수 }
+//   remove: 없어진 이벤트 이름 목록
+// 함수는 내용이 아니라 참조(===)로 비교한다. 렌더링마다 새로 만든 화살표 함수는 "바뀐" 것이 되어
+// 매번 핸들러를 갈아 끼우지만, 그래야 새 렌더링의 최신 값(클로저)을 보는 핸들러가 붙는다.
+function diffEvents(oldEvents, newEvents, path) {
+  const set = {};
+  const remove = [];
+
+  for (const name of Object.keys(newEvents)) {
+    if (oldEvents[name] !== newEvents[name]) {
+      set[name] = newEvents[name];
+    }
+  }
+
+  for (const name of Object.keys(oldEvents)) {
+    if (!Object.hasOwn(newEvents, name)) {
+      remove.push(name);
+    }
+  }
+
+  if (Object.keys(set).length === 0 && remove.length === 0) {
+    return null;
+  }
+  return { type: 'EVENTS', path, set, remove };
 }

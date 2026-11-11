@@ -1,3 +1,5 @@
+import { setEvent } from './events.js';
+
 // Virtual DOM을 실제 DOM 노드로 만든다. (domToVdom의 반대 방향)
 //
 // Patch 단계에서 REPLACE·ADD patch의 node(VDOM)를 화면에 넣으려면 실제 DOM 노드가 필요하다.
@@ -45,6 +47,11 @@ export function createElementDom(vnode) {
   // data-*도 이름 그대로 setAttribute하면 dataset에 자동으로 반영된다.
   for (const [name, value] of Object.entries(vnode.attrs)) {
     element.setAttribute(name, value);
+  }
+
+  // Phase 2: h()로 만든 VDOM에는 이벤트 핸들러(events)가 있다. Phase 1 VDOM(domToVdom)에는 없으므로 {}로 본다.
+  for (const [name, handler] of Object.entries(vnode.events ?? {})) {
+    setEvent(element, name, handler);
   }
 
   return element;

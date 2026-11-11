@@ -1,9 +1,11 @@
 import { vdomToDom } from './vdomToDom.js';
+import { setEvent, removeEvent } from './events.js';
 
 // diff가 만든 patch 목록을 실제 DOM에 반영한다. (R-P1-03)
 //
 // 바뀐 곳만 고친다.
 //   TEXT·ATTRS → 그 노드를 그 자리에서 고친다. 노드 객체는 그대로 남는다.
+//   EVENTS     → 그 요소의 이벤트 핸들러만 갈아 끼운다. (Phase 2)
 //   REPLACE    → 그 노드(와 자손)만 새 노드로 갈아 끼운다.
 //   ADD        → 새 노드를 만들어 끼운다.
 //   REMOVE     → 그 노드(와 자손)만 떼어 낸다.
@@ -27,6 +29,14 @@ export function patch(root, patches) {
       }
       for (const name of p.remove) {
         element.removeAttribute(name);
+      }
+    } else if (p.type === 'EVENTS') {
+      const element = getNodeByPath(root, p.path);
+      for (const [name, handler] of Object.entries(p.set)) {
+        setEvent(element, name, handler);
+      }
+      for (const name of p.remove) {
+        removeEvent(element, name);
       }
     } else if (p.type === 'REPLACE') {
       root = applyReplace(root, p);

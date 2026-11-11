@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { patch, getNodeByPath } from '../src/patch.js';
 import { diff } from '../src/diff.js';
 import { domToVdom } from '../src/domToVdom.js';
+import { vdomToDom } from '../src/vdomToDom.js';
 
 function fromHTML(html) {
   const wrapper = document.createElement('div');
@@ -479,5 +480,43 @@ describe('patch — 다섯 종류 patch 통합', () => {
 describe('patch — 알 수 없는 patch', () => {
   it('모르는 type이면 에러를 던진다', () => {
     expect(() => patch(fromHTML('<p></p>'), [{ type: 'MOVE', path: [0] }])).toThrow(/알 수 없는 patch 종류/);
+  });
+});
+
+describe('patch — EVENTS 적용 (Phase 2)', () => {
+  function button(events) {
+    return vdomToDom({ type: 'element', tag: 'button', attrs: {}, events, children: [] });
+  }
+
+  it('set은 옛 핸들러를 떼고 새 핸들러를 붙인다. 요소 객체는 그대로다', () => {
+    const calls = [];
+    const root = button({ click: () => calls.push('old') });
+
+    const result = patch(root, [{ type: 'EVENTS', path: [], set: { click: () => calls.push('new') }, remove: [] }]);
+    root.click();
+
+    expect(result).toBe(root);
+    expect(calls).toEqual(['new']);
+  });
+
+  it('remove는 핸들러를 뗀다. 없는 이벤트를 remove해도 에러가 없다', () => {
+    const calls = [];
+    const root = button({ click: () => calls.push('click') });
+
+    patch(root, [{ type: 'EVENTS', path: [], set: {}, remove: ['click', 'input'] }]);
+    root.click();
+
+    expect(calls).toEqual([]);
+  });
+
+  it('주석이 섞인 자식에서도 path로 찾은 요소에만 적용한다', () => {
+    const calls = [];
+    const root = fromHTML('<div><!--c--><button>a</button><!--c--><button>b</button></div>');
+
+    patch(root, [{ type: 'EVENTS', path: [1], set: { click: () => calls.push('b') }, remove: [] }]);
+    root.childNodes[1].click();
+    root.childNodes[3].click();
+
+    expect(calls).toEqual(['b']);
   });
 });

@@ -505,3 +505,42 @@ describe('diff — patch를 순서대로 적용하면 새 트리가 된다', () 
     });
   }
 });
+
+describe('diff — 이벤트 핸들러 변경(EVENTS, Phase 2)', () => {
+  const el = (events, children = []) => ({ type: 'element', tag: 'button', attrs: {}, events, children });
+  const onA = () => {};
+  const onB = () => {};
+
+  it('같은 함수(참조)면 patch가 없다', () => {
+    expect(diff(el({ click: onA }), el({ click: onA }))).toEqual([]);
+  });
+
+  it('추가·다른 함수로 교체는 set, 사라진 이벤트는 remove에 모은다', () => {
+    expect(diff(el({ click: onA, input: onA }), el({ click: onB, focus: onA }))).toEqual([
+      { type: 'EVENTS', path: [], set: { click: onB, focus: onA }, remove: ['input'] },
+    ]);
+  });
+
+  it('events가 없는 Phase 1 VDOM은 빈 이벤트로 본다', () => {
+    const phase1 = { type: 'element', tag: 'button', attrs: {}, children: [] };
+
+    expect(diff(phase1, phase1)).toEqual([]);
+    expect(diff(phase1, el({ click: onA }))).toEqual([
+      { type: 'EVENTS', path: [], set: { click: onA }, remove: [] },
+    ]);
+    expect(diff(el({ click: onA }), phase1)).toEqual([
+      { type: 'EVENTS', path: [], set: {}, remove: ['click'] },
+    ]);
+  });
+
+  it('ATTRS 다음, 자식 patch 앞에 온다', () => {
+    const oldV = { type: 'element', tag: 'div', attrs: { id: 'a' }, events: {}, children: [el({})] };
+    const newV = { type: 'element', tag: 'div', attrs: { id: 'b' }, events: { click: onA }, children: [el({ click: onB })] };
+
+    expect(diff(oldV, newV).map((p) => [p.type, p.path])).toEqual([
+      ['ATTRS', []],
+      ['EVENTS', []],
+      ['EVENTS', [0]],
+    ]);
+  });
+});
