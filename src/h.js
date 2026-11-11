@@ -82,22 +82,7 @@ export function resolve(vnode) {
     // 자식 컴포넌트는 props만 받아 VDOM을 돌려주는 순수 함수다(R-P2-04).
     // 돌려준 결과 안에 또 컴포넌트가 있을 수 있으므로 다시 resolve한다.
     const output = vnode.component(vnode.props);
-    const name = vnode.component.name || '익명 컴포넌트';
-
-    // 컴포넌트는 노드 "하나"를 돌려준다. 한 자리(path 하나)에 노드 하나가 대응해야 diff·patch가 맞기 때문이다.
-    // 배열을 받아 첫 노드만 쓰면 나머지가 조용히 사라지므로, 길이와 상관없이 배열은 거부한다.
-    // 여러 노드를 보여 주려면 h('ul', null, ...)처럼 부모 요소 하나로 감싼다.
-    if (Array.isArray(output)) {
-      throw new Error(`resolve: ${name}가 배열을 돌려주었습니다. 노드 하나(요소로 감싼 것)를 돌려주어야 합니다`);
-    }
-
-    const [rendered] = normalizeChildren([output]);
-    if (rendered === undefined) {
-      // 빈 결과를 허용하면 그 자리 노드가 사라져 형제 인덱스(path)가 렌더링마다 달라진다.
-      // 조건부로 숨기려면 부모에서 {show && h(Child)}처럼 쓴다.
-      throw new Error(`resolve: ${name}가 VDOM 노드를 돌려주지 않았습니다 (받은 값: ${output})`);
-    }
-    return resolve(rendered);
+    return resolve(toSingleNode(output, vnode.component));
   }
 
   if (vnode.type === 'text') {
@@ -109,4 +94,26 @@ export function resolve(vnode) {
   }
 
   throw new Error(`resolve: 알 수 없는 VDOM 종류입니다 (type: ${vnode.type})`);
+}
+
+// 컴포넌트 함수가 돌려준 값을 VDOM 노드 하나로 확인·변환한다.
+// 자식 컴포넌트(resolve)와 루트 컴포넌트(FunctionComponent)가 같은 규칙을 쓰도록 한곳에 둔다.
+//   노드(element/component) → 그대로, 문자열·숫자 → 텍스트 노드, 그 밖(배열·null 등) → 에러
+export function toSingleNode(output, component) {
+  const name = component.name || '익명 컴포넌트';
+
+  // 컴포넌트는 노드 "하나"를 돌려준다. 한 자리(path 하나)에 노드 하나가 대응해야 diff·patch가 맞기 때문이다.
+  // 배열을 받아 첫 노드만 쓰면 나머지가 조용히 사라지므로, 길이와 상관없이 배열은 거부한다.
+  // 여러 노드를 보여 주려면 h('ul', null, ...)처럼 부모 요소 하나로 감싼다.
+  if (Array.isArray(output)) {
+    throw new Error(`resolve: ${name}가 배열을 돌려주었습니다. 노드 하나(요소로 감싼 것)를 돌려주어야 합니다`);
+  }
+
+  const [node] = normalizeChildren([output]);
+  if (node === undefined) {
+    // 빈 결과를 허용하면 그 자리 노드가 사라져 형제 인덱스(path)가 렌더링마다 달라진다.
+    // 조건부로 숨기려면 부모에서 {show && h(Child)}처럼 쓴다.
+    throw new Error(`resolve: ${name}가 VDOM 노드를 돌려주지 않았습니다 (받은 값: ${output})`);
+  }
+  return node;
 }
