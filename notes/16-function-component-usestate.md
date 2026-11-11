@@ -78,6 +78,8 @@ App() { const [todos] = useState([]);  → hooks[0]
 
 지금은 setState마다 바로 `update()`한다. 그래서 위 2번 예처럼 세 번 부르면 **세 번 렌더링**된다. 한 번으로 묶는 것은 4단계(Batching)에서 한다.
 
+> **4단계에서 바뀜**: setState는 이제 바로 `update()`하지 않고 재렌더링을 예약하며, microtask에서 한 번만 그린다. → [18-batching.md](18-batching.md)
+
 ## Hook은 루트에서만 (R-P2-03) — 어떻게 막나
 `render()`는 두 단계로 나뉜다.
 ```
@@ -97,7 +99,7 @@ resolve(...)   renderingChildren = true  ← 이때 Child() 실행. Child 안의
 자식은 상태가 없으므로 같은 props면 항상 같은 VDOM을 돌려준다(순수 함수).
 
 ## 한계 (지금 정한 것)
-- setState마다 동기로 바로 재렌더링한다(Batching은 4단계).
+- setState마다 동기로 바로 재렌더링한다(Batching은 4단계). → 4단계에서 microtask 자동 batching으로 바뀜([18-batching.md](18-batching.md))
 - 루트 props는 생성할 때 한 번 받는다. 밖에서 props를 바꿔 다시 그리는 API는 없다.
 - unmount(화면에서 떼기)는 없다.
 - `<input>`의 `value`는 속성으로만 반영된다. 상태가 바뀌어 `value` 속성이 바뀌어도, 사용자가 이미 입력한 화면 값(프로퍼티)은 따라오지 않을 수 있다(Todo 앱 단계에서 다룸).

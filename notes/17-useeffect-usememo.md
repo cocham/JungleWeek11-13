@@ -90,13 +90,15 @@ mount: render(data='loading') → DOM → effect1: setA(1) → 예약만
 - 후속 렌더링도 diff·patch를 쓰므로 DOM 객체가 유지된다.
 - deps를 빼먹고 매번 setState하면 끝나지 않으므로, 연속 50번을 넘으면 에러를 던진다. 다음 이벤트에서는 0부터 다시 센다.
 
+> **4단계에서 바뀜**: effect 안의 setState를 따로 처리하던 `updateRequested` 반복은 없어졌다. 이제 모든 setState가 같은 예약 목록을 쓰고, microtask의 flush가 effect의 setState까지 이어서 처리한다(같은 렌더링의 effect가 모두 끝난 뒤 다시 그린다는 결과는 같다). 그래서 mount의 effect에서 setState하면 `mount()`가 돌아올 때는 첫 화면이고, microtask 뒤에 바뀐다. 50번 한도는 flush 안으로 옮겨졌다. → [18-batching.md](18-batching.md)
+
 ## Hook 순서 검사 강화
 Hook 칸에 `kind`를 저장한다. 개수는 같아도 `useEffect`가 있던 자리에서 `useMemo`를 부르면 에러다.
 
 ## 한계
 - unmount가 없으므로 마지막 cleanup은 불리지 않는다.
 - 이 구현은 DOM 반영 직후 Effect를 동기로 실행한다. 실제 React의 useEffect는 commit 이후 실행되며, 브라우저 paint와의 순서는 상황에 따라 달라질 수 있다(예: 클릭 같은 상호작용으로 생긴 Effect는 paint 전에 실행될 수도 있다). 동기로 정한 것은 흐름과 테스트를 단순하게 하려는 결정이다.
-- setState마다 바로 렌더링하는 것은 그대로다(이벤트 핸들러 안의 여러 setState 묶기 = 4단계 Batching).
+- setState마다 바로 렌더링하는 것은 그대로다(이벤트 핸들러 안의 여러 setState 묶기 = 4단계 Batching). → 4단계에서 바뀜([18-batching.md](18-batching.md))
   단, effect 안의 여러 setState는 이미 한 번으로 묶인다.
 
 ## 이해 확인 질문

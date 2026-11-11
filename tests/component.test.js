@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import { FunctionComponent, useState } from '../src/component.js';
+import { FunctionComponent, useState, flushSync } from '../src/component.js';
 import { h } from '../src/h.js';
 
 function mountApp(App, props) {
@@ -59,8 +59,8 @@ describe('useState — 상태 저장과 자동 재렌더링', () => {
     const button = container.querySelector('button');
 
     expect(container.querySelector('span').textContent).toBe('count: 0');
-    button.click();
-    button.click();
+    flushSync(() => button.click());
+    flushSync(() => button.click());
     expect(container.querySelector('span').textContent).toBe('count: 2');
   });
 
@@ -74,7 +74,7 @@ describe('useState — 상태 저장과 자동 재렌더링', () => {
     };
     const { app, container } = mountApp(App);
 
-    setB(5);
+    flushSync(() => setB(5));
 
     expect(app.hooks.map((hook) => hook.value)).toEqual(['A', 5]);
     expect(container.textContent).toBe('A5');
@@ -88,7 +88,7 @@ describe('useState — 상태 저장과 자동 재렌더링', () => {
     const button = div.lastChild;
 
     const update = vi.spyOn(app, 'update');
-    button.click();
+    flushSync(() => button.click());
 
     // 바뀐 텍스트(TEXT)와 새 클로저 핸들러(EVENTS)만 반영된다.
     expect(update.mock.results[0].value).toEqual([
@@ -110,8 +110,8 @@ describe('useState — 상태 저장과 자동 재렌더링', () => {
     };
     mountApp(App);
 
-    setters[0](1);
-    setters[0](2);
+    flushSync(() => setters[0](1));
+    flushSync(() => setters[0](2));
 
     expect(setters).toHaveLength(3);
     expect(new Set(setters).size).toBe(1);
@@ -129,7 +129,7 @@ describe('useState — 상태 저장과 자동 재렌더링', () => {
     };
     const { container } = mountApp(App);
 
-    container.firstChild.click();
+    flushSync(() => container.firstChild.click());
 
     expect(container.textContent).toBe('3');
   });
@@ -143,8 +143,10 @@ describe('useState — 상태 저장과 자동 재렌더링', () => {
     });
     mountApp(App);
 
-    setN(0);
-    setN((prev) => prev);
+    flushSync(() => {
+      setN(0);
+      setN((prev) => prev);
+    });
 
     expect(App).toHaveBeenCalledTimes(1);
   });
@@ -158,11 +160,11 @@ describe('useState — 상태 저장과 자동 재렌더링', () => {
     };
     const { container } = mountApp(App);
 
-    setItems([...items, 'b']);
+    flushSync(() => setItems([...items, 'b']));
     expect(container.innerHTML).toBe('<ul><li>a</li><li>b</li></ul>');
 
     items.push('c');
-    setItems(items);
+    flushSync(() => setItems(items));
     expect(container.innerHTML).toBe('<ul><li>a</li><li>b</li></ul>');
   });
 
@@ -192,11 +194,11 @@ describe('useState — 상태 저장과 자동 재렌더링', () => {
     };
     const { app, container } = mountApp(App);
 
-    setOn(true);
+    flushSync(() => setOn(true));
     expect(container.innerHTML).toBe('<section>on</section>');
     expect(app.root).toBe(container.firstChild);
 
-    setOn(false);
+    flushSync(() => setOn(false));
     expect(container.innerHTML).toBe('<p>off</p>');
   });
 
@@ -204,7 +206,7 @@ describe('useState — 상태 저장과 자동 재렌더링', () => {
     const a = mountApp(Counter);
     const b = mountApp(Counter);
 
-    a.container.querySelector('button').click();
+    flushSync(() => a.container.querySelector('button').click());
 
     expect(a.container.querySelector('span').textContent).toBe('count: 1');
     expect(b.container.querySelector('span').textContent).toBe('count: 0');
@@ -223,7 +225,7 @@ describe('Lifting State Up — 상태는 루트, 자식은 props만 (R-P2-04)', 
     const input = container.querySelector('input');
 
     input.value = 'hi';
-    input.dispatchEvent(new Event('input'));
+    flushSync(() => input.dispatchEvent(new Event('input')));
 
     expect(container.querySelector('p').textContent).toBe('미리보기: hi');
     // input 요소는 새로 만들어지지 않는다.
@@ -281,7 +283,7 @@ describe('Hook 규칙 — 잘못 부르면 에러', () => {
 
     // 에러 후에도 렌더링 표시가 풀려 이벤트에서의 setState는 정상 동작한다.
     mode = 'none';
-    expect(() => setN(10)).not.toThrow();
+    expect(() => flushSync(() => setN(10))).not.toThrow();
   });
 
   it('조건문 때문에 Hook 개수가 줄거나 늘면 에러', () => {
@@ -295,7 +297,7 @@ describe('Hook 규칙 — 잘못 부르면 에러', () => {
     };
     mountApp(App);
     extra = true;
-    expect(() => setN(1)).toThrow(/Hook 개수가 렌더링마다 달라졌습니다 \(이전 1개, 이번 2개 이상\)/);
+    expect(() => flushSync(() => setN(1))).toThrow(/Hook 개수가 렌더링마다 달라졌습니다 \(이전 1개, 이번 2개 이상\)/);
 
     let skip = false;
     let setA;
@@ -307,7 +309,7 @@ describe('Hook 규칙 — 잘못 부르면 에러', () => {
     };
     mountApp(App2);
     skip = true;
-    expect(() => setA(1)).toThrow(/이전 2개, 이번 1개\)/);
+    expect(() => flushSync(() => setA(1))).toThrow(/이전 2개, 이번 1개\)/);
   });
 
   it('에러가 난 렌더링 뒤에도 다음 렌더링에서 Hook을 정상적으로 쓸 수 있다', () => {

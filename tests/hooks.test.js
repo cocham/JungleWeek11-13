@@ -1,11 +1,12 @@
 import { describe, it, expect, vi } from 'vitest';
-import { FunctionComponent, useState, useEffect, useMemo } from '../src/component.js';
+import { FunctionComponent, useState, useEffect, useMemo, flushSync } from '../src/component.js';
 import { h } from '../src/h.js';
 
 function mountApp(App) {
   const container = document.createElement('div');
   const app = new FunctionComponent(App);
-  app.mount(container);
+  // mount 중 effect가 예약한 재렌더링까지 바로 처리해 결과를 확인한다.
+  flushSync(() => app.mount(container));
   return { app, container };
 }
 
@@ -41,7 +42,7 @@ describe('useEffect — 실행 시점', () => {
     container = document.createElement('div');
     new FunctionComponent(App).mount(container);
 
-    setN(1);
+    flushSync(() => setN(1));
 
     expect(seen).toEqual(['n=0', 'n=1']);
   });
@@ -85,7 +86,7 @@ describe('useEffect — deps', () => {
       return h('p', null, `${a},${b}`);
     };
     mountApp(App);
-    return { effect, setA: (v) => setA(v), setB: (v) => setB(v) };
+    return { effect, setA: (v) => flushSync(() => setA(v)), setB: (v) => flushSync(() => setB(v)) };
   }
 
   it('deps를 생략하면 매 렌더링 뒤 실행된다', () => {
@@ -124,13 +125,13 @@ describe('useEffect — deps', () => {
     };
     mountApp(App);
 
-    setTick(1); // NaN → NaN: 같음
+    flushSync(() => setTick(1)); // NaN → NaN: 같음
     expect(effect).toHaveBeenCalledTimes(1);
 
     value = [];
-    setTick(2); // NaN → []: 다름
+    flushSync(() => setTick(2)); // NaN → []: 다름
     value = [];
-    setTick(3); // [] → 새 []: 참조가 달라 다름
+    flushSync(() => setTick(3)); // [] → 새 []: 참조가 달라 다름
     expect(effect).toHaveBeenCalledTimes(3);
   });
 
@@ -147,7 +148,7 @@ describe('useEffect — deps', () => {
     mountApp(App);
 
     deps = [1, 2];
-    setTick(1);
+    flushSync(() => setTick(1));
 
     expect(effect).toHaveBeenCalledTimes(2);
   });
@@ -177,8 +178,8 @@ describe('useEffect — cleanup', () => {
     };
     mountApp(App);
 
-    setId(2);
-    setId(3);
+    flushSync(() => setId(2));
+    flushSync(() => setId(3));
 
     expect(log).toEqual(['subscribe 1', 'unsubscribe 1', 'subscribe 2', 'unsubscribe 2', 'subscribe 3']);
   });
@@ -194,7 +195,7 @@ describe('useEffect — cleanup', () => {
     };
     mountApp(App);
 
-    setN(1);
+    flushSync(() => setN(1));
 
     expect(cleanup).not.toHaveBeenCalled();
   });
@@ -218,7 +219,7 @@ describe('useEffect — cleanup', () => {
     mountApp(App);
     log.length = 0;
 
-    setN(1);
+    flushSync(() => setN(1));
 
     expect(log).toEqual(['cleanup a0', 'cleanup b0', 'a1', 'b1']);
   });
@@ -233,12 +234,12 @@ describe('useEffect — cleanup', () => {
     };
     mountApp(App);
 
-    expect(() => setN(1)).not.toThrow();
+    expect(() => flushSync(() => setN(1))).not.toThrow();
   });
 });
 
 describe('useEffect — effect 안의 setState', () => {
-  it('mount의 effect에서 setState하면 effect가 끝난 뒤 다시 렌더링되고, mount가 돌아올 때 화면은 최신이다', () => {
+  it('mount의 effect에서 setState하면 effect가 끝난 뒤 한 번 더 렌더링되어 최신 화면이 된다', () => {
     const renders = vi.fn();
     const App = () => {
       const [data, setData] = useState('loading');
@@ -277,23 +278,22 @@ describe('useEffect — effect 안의 setState', () => {
   });
 
   it('후속 재렌더링도 diff·patch로 반영되어 DOM 객체가 유지된다', () => {
-    let p;
+    const seen = [];
+    const container = document.createElement('div');
     const App = () => {
       const [n, setN] = useState(0);
       useEffect(() => {
-        p = p ?? document.querySelector('p');
+        seen.push(container.firstChild);
         if (n < 3) setN(n + 1);
       }, [n]);
       return h('p', null, n);
     };
-    const container = document.createElement('div');
-    document.body.appendChild(container);
-    const app = new FunctionComponent(App);
-    app.mount(container);
+    flushSync(() => new FunctionComponent(App).mount(container));
 
     expect(container.innerHTML).toBe('<p>3</p>');
-    expect(container.firstChild).toBe(p);
-    container.remove();
+    // effect가 본 <p> 네 번(n=0~3)이 모두 같은 객체다.
+    expect(seen).toHaveLength(4);
+    seen.forEach((node) => expect(node).toBe(container.firstChild));
   });
 
   it('deps를 빼먹어 매번 setState하면 무한 반복 대신 에러를 던진다', () => {
@@ -308,7 +308,7 @@ describe('useEffect — effect 안의 setState', () => {
     expect(() => mountApp(App)).toThrow(/재렌더링이 50번을 넘었습니다/);
   });
 
-  it('한도는 연속 후속 재렌더링마다 새로 센다 (이벤트마다 다시 0부터)', () => {
+  it('한도는 flush마다 새로 센다 (이벤트마다 다시 0부터)', () => {
     let setN;
     const App = () => {
       const [n, _setN] = useState(0);
@@ -322,8 +322,8 @@ describe('useEffect — effect 안의 setState', () => {
     };
     const { container } = mountApp(App);
 
-    setN(1);
-    setN(2);
+    flushSync(() => setN(1));
+    flushSync(() => setN(2));
 
     expect(container.textContent).toBe('2,80');
   });
@@ -348,11 +348,11 @@ describe('useEffect — effect 안의 setState', () => {
     const { container } = mountApp(App);
 
     fail = true;
-    expect(() => setN(1)).toThrow('effect 실패');
+    expect(() => flushSync(() => setN(1))).toThrow('effect 실패');
     expect(renders).toHaveBeenCalledTimes(2);
 
     fail = false;
-    setN(2);
+    flushSync(() => setN(2));
     expect(container.textContent).toBe('2,1');
   });
 });
@@ -380,9 +380,9 @@ describe('useMemo', () => {
     return {
       filterTodos,
       container,
-      setTodos: (v) => setTodos(v),
-      setFilter: (v) => setFilter(v),
-      setText: (v) => setText(v),
+      setTodos: (v) => flushSync(() => setTodos(v)),
+      setFilter: (v) => flushSync(() => setFilter(v)),
+      setText: (v) => flushSync(() => setText(v)),
     };
   }
 
@@ -424,7 +424,7 @@ describe('useMemo', () => {
     };
     mountApp(App);
 
-    setN(1);
+    flushSync(() => setN(1));
 
     expect(results[1]).toBe(results[0]);
   });
@@ -440,7 +440,7 @@ describe('useMemo', () => {
     };
     mountApp(App);
 
-    setN(1);
+    flushSync(() => setN(1));
 
     expect(compute).toHaveBeenCalledTimes(2);
   });
@@ -490,7 +490,7 @@ describe('Hook 규칙 — useEffect·useMemo', () => {
     mountApp(App);
     swap = true;
 
-    expect(() => setN(1)).toThrow(/Hook 순서가 렌더링마다 달라졌습니다 \(1번째: 이전 useEffect, 이번 useMemo\)/);
+    expect(() => flushSync(() => setN(1))).toThrow(/Hook 순서가 렌더링마다 달라졌습니다 \(1번째: 이전 useEffect, 이번 useMemo\)/);
   });
 
   it('렌더링이 실패해 effect가 실행되지 않았으면, 다음 렌더링에서 실행된다', () => {

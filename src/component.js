@@ -20,6 +20,12 @@ import { patch } from './patch.js';
 //   render   컴포넌트 실행 → VDOM. useEffect는 "실행할 effect"를 pendingEffects에 모아 두기만 한다.
 //   commit   실제 DOM 생성(mount) 또는 diff → patch(update)
 //   effects  DOM이 바뀐 뒤 모아 둔 effect를 실행한다. effect 안에서 바뀐 DOM을 읽을 수 있다.
+//
+// Batching (R-OPT-01, React 18의 자동 batching과 같은 방식)
+//   setState는 값만 바꾸고 컴포넌트를 "다시 그릴 목록"(dirtyComponents)에 넣는다. 바로 그리지 않는다.
+//   지금 실행 중인 코드(이벤트 핸들러, effect 등)가 끝나면 microtask에서 목록의 컴포넌트를 한 번씩만 다시 그린다.
+//     onClick() { setA(1); setB(2); setC(3); }   → 렌더링 1번 (setState 3번)
+//   microtask는 이벤트 핸들러가 끝난 직후, 브라우저가 화면을 그리기 전에 실행되므로 중간 화면은 보이지 않는다.
 
 // 지금 Hook을 부를 수 있는 상태인지 나타낸다.
 //   currentComponent: 실행 중인 루트 컴포넌트. 루트 함수가 실행되는 동안만 값이 있다.
@@ -29,8 +35,64 @@ let currentComponent = null;
 let hookIndex = 0;
 let renderingChildren = false;
 
-// effect 안의 setState가 다시 effect의 setState를 부르는 식으로 끝없이 재렌더링되는 것을 막는 한도.
-const MAX_EFFECT_UPDATES = 50;
+// 다시 그릴 컴포넌트 목록. Set이라 같은 컴포넌트를 여러 번 넣어도 한 번만 들어간다.
+const dirtyComponents = new Set();
+let flushScheduled = false;
+
+// 한 번의 flush 안에서 "다시 그리기 → effect의 setState → 또 다시 그리기"가 이어질 수 있는 최대 횟수.
+// deps를 빼먹은 effect가 매번 setState하면 끝나지 않으므로, 브라우저가 멈추기 전에 에러로 알린다.
+const MAX_NESTED_UPDATES = 50;
+
+// 컴포넌트를 다시 그릴 목록에 넣고, 아직 예약이 없으면 microtask에 flush를 예약한다.
+function scheduleUpdate(component) {
+  dirtyComponents.add(component);
+  if (!flushScheduled) {
+    flushScheduled = true;
+    queueMicrotask(() => {
+      flushScheduled = false;
+      flushUpdates();
+    });
+  }
+}
+
+// 목록의 컴포넌트를 지금 바로 다시 그린다. 목록이 빌 때까지 반복한다.
+// 다시 그리는 중 effect가 setState하면 그 컴포넌트가 목록에 다시 들어오고, 다음 바퀴에서 그려진다.
+function flushUpdates() {
+  let rounds = 0;
+  while (dirtyComponents.size > 0) {
+    rounds += 1;
+    if (rounds > MAX_NESTED_UPDATES) {
+      dirtyComponents.clear();
+      throw new Error(
+        `effect 안의 setState로 재렌더링이 ${MAX_NESTED_UPDATES}번을 넘었습니다. useEffect의 deps를 확인하세요`,
+      );
+    }
+    // 이번 바퀴에 그릴 컴포넌트를 꺼내고 목록은 비운다. 그리는 동안 새로 들어온 것은 다음 바퀴 몫이다.
+    const components = [...dirtyComponents];
+    dirtyComponents.clear();
+    for (const component of components) {
+      try {
+        component.update();
+      } catch (error) {
+        // 실패한 컴포넌트가 실패 도중 예약한 재렌더링은 버린다(실패를 반복하지 않게).
+        // 이번 바퀴의 나머지 컴포넌트는 다시 목록에 넣어 다음 microtask에서 그린다.
+        dirtyComponents.delete(component);
+        for (const rest of components.slice(components.indexOf(component) + 1)) {
+          scheduleUpdate(rest);
+        }
+        throw error;
+      }
+    }
+  }
+}
+
+// fn을 실행하고, 그 안에서 예약된 재렌더링을 microtask를 기다리지 않고 바로 처리한다. (React의 flushSync와 같은 이름)
+// 기다리지 않고 바로 화면을 확인해야 할 때(테스트 등) 쓴다. fn 안의 여러 setState는 여전히 한 번으로 묶인다.
+export function flushSync(fn) {
+  const result = fn === undefined ? undefined : fn();
+  flushUpdates();
+  return result;
+}
 
 export class FunctionComponent {
   constructor(component, props = {}) {
@@ -41,8 +103,6 @@ export class FunctionComponent {
     this.root = null; // 화면에 있는 루트 DOM 노드. patch가 이 노드부터 path를 따라간다.
     this.isRendering = false;
     this.pendingEffects = []; // 이번 렌더링에서 실행하기로 한 effect들 (useEffect가 채운다)
-    this.isRunningEffects = false;
-    this.updateRequested = false; // effect 실행 중에 setState가 불려 다시 그려야 하는지
   }
 
   // 첫 렌더링: 컴포넌트를 실행해 만든 VDOM을 통째로 실제 DOM으로 만들어 container에 붙인다.
@@ -55,77 +115,45 @@ export class FunctionComponent {
     this.root = vdomToDom(vdom);
     container.appendChild(this.root);
     this.vdom = vdom;
-    this.runEffectsAndFollowUps();
+    this.runPendingEffects();
   }
 
   // 상태가 바뀐 뒤의 재렌더링: 새 VDOM을 계산하고 옛 VDOM과 비교해 바뀐 곳만 실제 DOM에 반영한다. (R-P2-07)
+  // 보통은 직접 부르지 않고, setState가 예약한 flush가 부른다.
   // 이 update가 적용한 patch 목록을 돌려준다(무엇이 바뀌었는지 확인용).
-  // effect의 setState로 이어진 후속 재렌더링의 patch는 포함하지 않는다.
   update() {
     if (this.root === null) {
       throw new Error('FunctionComponent: mount 전에는 update할 수 없습니다');
     }
-    const patches = this.renderAndPatch();
-    this.runEffectsAndFollowUps();
-    return patches;
-  }
-
-  // 다시 렌더링해 바뀐 곳만 실제 DOM에 반영한다. effect는 실행하지 않는다.
-  renderAndPatch() {
+    // 직접 update하면 이미 최신 상태로 그리므로, 예약해 둔 재렌더링은 필요 없다.
+    dirtyComponents.delete(this);
     const newVdom = this.render();
     const patches = diff(this.vdom, newVdom);
     // 루트가 다른 태그로 바뀌면 patch가 새 루트 노드를 돌려주므로 항상 받아 둔다.
     this.root = patch(this.root, patches);
     this.vdom = newVdom;
-    return patches;
-  }
-
-  // 모아 둔 effect를 실행하고, 그 안에서 setState가 불렸으면 다시 렌더링·patch·effect를 반복한다.
-  //   effect 실행 중의 setState는 바로 update하지 않고 updateRequested만 켠다(useState 참고).
-  //   바로 update하면 같은 렌더링의 아직 실행하지 않은 effect보다 다음 렌더링이 먼저 끼어든다.
-  runEffectsAndFollowUps() {
-    let followUps = 0;
     this.runPendingEffects();
-    while (this.updateRequested) {
-      this.updateRequested = false;
-      followUps += 1;
-      // deps를 빼먹은 effect가 매번 setState하면 끝나지 않는다. 브라우저가 멈추기 전에 알린다.
-      if (followUps > MAX_EFFECT_UPDATES) {
-        throw new Error(
-          `effect 안의 setState로 재렌더링이 ${MAX_EFFECT_UPDATES}번을 넘었습니다. useEffect의 deps를 확인하세요`,
-        );
-      }
-      this.renderAndPatch();
-      this.runPendingEffects();
-    }
+    return patches;
   }
 
   // 이번 렌더링에서 실행하기로 한 effect를 실행한다.
   // React처럼 이전 cleanup을 모두 먼저 부르고, 그다음 effect를 호출 순서대로 부른다.
+  // effect 안의 setState도 다른 setState처럼 예약만 한다. 그래서 같은 렌더링의 effect가 모두 끝난 뒤 다시 그려진다.
   runPendingEffects() {
     const effects = this.pendingEffects;
     this.pendingEffects = [];
-    this.isRunningEffects = true;
-    try {
-      for (const { hook } of effects) {
-        if (hook.cleanup !== null) {
-          const cleanup = hook.cleanup;
-          hook.cleanup = null;
-          cleanup();
-        }
+    for (const { hook } of effects) {
+      if (hook.cleanup !== null) {
+        const cleanup = hook.cleanup;
+        hook.cleanup = null;
+        cleanup();
       }
-      for (const { hook, effect, deps } of effects) {
-        hook.deps = deps;
-        hook.hasRun = true;
-        const result = effect();
-        hook.cleanup = typeof result === 'function' ? result : null;
-      }
-    } catch (error) {
-      // effect가 실패하면 그 안의 setState로 생긴 후속 재렌더링도 하지 않는다.
-      this.updateRequested = false;
-      throw error;
-    } finally {
-      this.isRunningEffects = false;
+    }
+    for (const { hook, effect, deps } of effects) {
+      hook.deps = deps;
+      hook.hasRun = true;
+      const result = effect();
+      hook.cleanup = typeof result === 'function' ? result : null;
     }
   }
 
@@ -240,12 +268,8 @@ export function useState(initialValue) {
       if (component.root === null) {
         return;
       }
-      // effect 실행 중이면 지금 바로 그리지 않고, 이번 effect들이 끝난 뒤 한 번 다시 그린다.
-      if (component.isRunningEffects) {
-        component.updateRequested = true;
-        return;
-      }
-      component.update();
+      // 바로 그리지 않고 예약한다(Batching). 지금 코드가 끝나면 microtask에서 한 번만 다시 그린다.
+      scheduleUpdate(component);
     };
 
     component.hooks.push(hook);
