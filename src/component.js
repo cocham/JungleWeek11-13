@@ -15,6 +15,11 @@ import { patch } from './patch.js';
 //   App() { const [todos] = useState([]);   → hooks[0]
 //           const [text]  = useState('');   → hooks[1] }
 // 이름이 아니라 순서로 찾으므로, 렌더링마다 Hook을 같은 순서·같은 개수로 불러야 한다.
+//
+// 한 번의 렌더링 흐름 (mount·update 공통)
+//   render   컴포넌트 실행 → VDOM. useEffect는 "실행할 effect"를 pendingEffects에 모아 두기만 한다.
+//   commit   실제 DOM 생성(mount) 또는 diff → patch(update)
+//   effects  DOM이 바뀐 뒤 모아 둔 effect를 실행한다. effect 안에서 바뀐 DOM을 읽을 수 있다.
 
 // 지금 Hook을 부를 수 있는 상태인지 나타낸다.
 //   currentComponent: 실행 중인 루트 컴포넌트. 루트 함수가 실행되는 동안만 값이 있다.
@@ -24,6 +29,9 @@ let currentComponent = null;
 let hookIndex = 0;
 let renderingChildren = false;
 
+// effect 안의 setState가 다시 effect의 setState를 부르는 식으로 끝없이 재렌더링되는 것을 막는 한도.
+const MAX_EFFECT_UPDATES = 50;
+
 export class FunctionComponent {
   constructor(component, props = {}) {
     this.component = component;
@@ -32,10 +40,13 @@ export class FunctionComponent {
     this.vdom = null; // 마지막으로 화면에 반영한 VDOM. 다음 diff의 "옛 VDOM"이다.
     this.root = null; // 화면에 있는 루트 DOM 노드. patch가 이 노드부터 path를 따라간다.
     this.isRendering = false;
+    this.pendingEffects = []; // 이번 렌더링에서 실행하기로 한 effect들 (useEffect가 채운다)
+    this.isRunningEffects = false;
+    this.updateRequested = false; // effect 실행 중에 setState가 불려 다시 그려야 하는지
   }
 
   // 첫 렌더링: 컴포넌트를 실행해 만든 VDOM을 통째로 실제 DOM으로 만들어 container에 붙인다.
-  // 비교할 옛 화면이 없으므로 diff 없이 전부 만든다.
+  // 비교할 옛 화면이 없으므로 diff 없이 전부 만든다. 화면에 붙인 뒤 effect를 실행한다.
   mount(container) {
     if (this.root !== null) {
       throw new Error('FunctionComponent: 이미 mount되었습니다');
@@ -44,20 +55,78 @@ export class FunctionComponent {
     this.root = vdomToDom(vdom);
     container.appendChild(this.root);
     this.vdom = vdom;
+    this.runEffectsAndFollowUps();
   }
 
   // 상태가 바뀐 뒤의 재렌더링: 새 VDOM을 계산하고 옛 VDOM과 비교해 바뀐 곳만 실제 DOM에 반영한다. (R-P2-07)
-  // 적용한 patch 목록을 돌려준다(무엇이 바뀌었는지 확인용).
+  // 이 update가 적용한 patch 목록을 돌려준다(무엇이 바뀌었는지 확인용).
+  // effect의 setState로 이어진 후속 재렌더링의 patch는 포함하지 않는다.
   update() {
     if (this.root === null) {
       throw new Error('FunctionComponent: mount 전에는 update할 수 없습니다');
     }
+    const patches = this.renderAndPatch();
+    this.runEffectsAndFollowUps();
+    return patches;
+  }
+
+  // 다시 렌더링해 바뀐 곳만 실제 DOM에 반영한다. effect는 실행하지 않는다.
+  renderAndPatch() {
     const newVdom = this.render();
     const patches = diff(this.vdom, newVdom);
     // 루트가 다른 태그로 바뀌면 patch가 새 루트 노드를 돌려주므로 항상 받아 둔다.
     this.root = patch(this.root, patches);
     this.vdom = newVdom;
     return patches;
+  }
+
+  // 모아 둔 effect를 실행하고, 그 안에서 setState가 불렸으면 다시 렌더링·patch·effect를 반복한다.
+  //   effect 실행 중의 setState는 바로 update하지 않고 updateRequested만 켠다(useState 참고).
+  //   바로 update하면 같은 렌더링의 아직 실행하지 않은 effect보다 다음 렌더링이 먼저 끼어든다.
+  runEffectsAndFollowUps() {
+    let followUps = 0;
+    this.runPendingEffects();
+    while (this.updateRequested) {
+      this.updateRequested = false;
+      followUps += 1;
+      // deps를 빼먹은 effect가 매번 setState하면 끝나지 않는다. 브라우저가 멈추기 전에 알린다.
+      if (followUps > MAX_EFFECT_UPDATES) {
+        throw new Error(
+          `effect 안의 setState로 재렌더링이 ${MAX_EFFECT_UPDATES}번을 넘었습니다. useEffect의 deps를 확인하세요`,
+        );
+      }
+      this.renderAndPatch();
+      this.runPendingEffects();
+    }
+  }
+
+  // 이번 렌더링에서 실행하기로 한 effect를 실행한다.
+  // React처럼 이전 cleanup을 모두 먼저 부르고, 그다음 effect를 호출 순서대로 부른다.
+  runPendingEffects() {
+    const effects = this.pendingEffects;
+    this.pendingEffects = [];
+    this.isRunningEffects = true;
+    try {
+      for (const { hook } of effects) {
+        if (hook.cleanup !== null) {
+          const cleanup = hook.cleanup;
+          hook.cleanup = null;
+          cleanup();
+        }
+      }
+      for (const { hook, effect, deps } of effects) {
+        hook.deps = deps;
+        hook.hasRun = true;
+        const result = effect();
+        hook.cleanup = typeof result === 'function' ? result : null;
+      }
+    } catch (error) {
+      // effect가 실패하면 그 안의 setState로 생긴 후속 재렌더링도 하지 않는다.
+      this.updateRequested = false;
+      throw error;
+    } finally {
+      this.isRunningEffects = false;
+    }
   }
 
   // 컴포넌트를 실행해 element/text만 남은 VDOM을 만든다. 실제 DOM은 건드리지 않는다.
@@ -84,10 +153,12 @@ export class FunctionComponent {
   renderRoot() {
     currentComponent = this;
     hookIndex = 0;
+    // 실패한 이전 렌더링에서 모은 effect가 남아 있지 않게 매번 비우고 시작한다.
+    this.pendingEffects = [];
     try {
       const output = this.component(this.props);
       // Hook은 순서로 찾으므로 개수가 바뀌면 이후 Hook이 엉뚱한 칸을 읽는다. 조용히 틀리지 않게 멈춘다.
-      // (늘어난 경우는 useState가 칸을 찾을 때 먼저 막는다. 여기서는 줄어든 경우를 잡는다.)
+      // (늘어난 경우는 Hook이 칸을 찾을 때 먼저 막는다. 여기서는 줄어든 경우를 잡는다.)
       if (!this.isFirstRender() && hookIndex !== this.hooks.length) {
         throw hookCountError(this.hooks.length, `${hookIndex}개`);
       }
@@ -103,7 +174,8 @@ export class FunctionComponent {
   }
 }
 
-// 지금 렌더링 중인 루트 컴포넌트의 다음 Hook 칸 번호를 돌려준다. Hook을 부를 수 없는 때면 에러.
+// 지금 렌더링 중인 루트 컴포넌트의 다음 Hook 칸을 찾는다. Hook을 부를 수 없는 때면 에러.
+//   hook: 그 칸에 이미 있는 Hook 객체. 첫 렌더링이면 undefined이고, 부른 쪽이 만들어 push한다.
 function nextHookSlot(hookName) {
   if (renderingChildren) {
     throw new Error(`${hookName}는 루트 컴포넌트에서만 쓸 수 있습니다. 자식 컴포넌트는 props만 받아야 합니다 (R-P2-03)`);
@@ -117,7 +189,15 @@ function nextHookSlot(hookName) {
   if (!component.isFirstRender() && index >= component.hooks.length) {
     throw hookCountError(component.hooks.length, `${index + 1}개 이상`);
   }
-  return { component, index };
+  const hook = component.hooks[index];
+  // 개수는 같아도 순서가 바뀌면(useState 자리에 useMemo) 다른 종류의 칸을 읽게 된다.
+  if (hook !== undefined && hook.kind !== hookName) {
+    throw new Error(
+      `Hook 순서가 렌더링마다 달라졌습니다 (${index}번째: 이전 ${hook.kind}, 이번 ${hookName}). ` +
+        'Hook을 조건문·반복문 안에서 부르지 마세요',
+    );
+  }
+  return { component, hook };
 }
 
 function hookCountError(before, now) {
@@ -130,39 +210,107 @@ function hookCountError(before, now) {
 // 상태 하나를 만든다. [지금 값, 값을 바꾸는 함수]를 돌려준다. (R-P2-06)
 //   setState(새 값) 또는 setState(이전 값 => 새 값)
 export function useState(initialValue) {
-  const { component, index } = nextHookSlot('useState');
+  const { component, hook: existing } = nextHookSlot('useState');
+  let hook = existing;
 
   // 첫 렌더링에만 칸을 만든다. 이후 렌더링은 같은 칸의 값을 그대로 읽으므로 initialValue는 무시된다.
-  if (component.hooks.length <= index) {
-    const hook = { value: initialValue };
+  if (hook === undefined) {
+    hook = { kind: 'useState', value: initialValue };
+    const stateHook = hook;
 
     // setState는 첫 렌더링에 한 번 만들어 계속 같은 함수를 쓴다.
     // 이벤트 핸들러가 옛 렌더링의 setState를 들고 있어도 같은 칸·같은 컴포넌트를 바꾼다.
-    hook.setState = (next) => {
+    stateHook.setState = (next) => {
       // 렌더링 중에 상태를 바꾸면 그 상태로 다시 렌더링 → 또 setState …로 끝없이 반복될 수 있다.
       if (component.isRendering) {
         throw new Error('렌더링 중에는 setState를 부를 수 없습니다. 이벤트 핸들러 안에서 부르세요');
       }
       // 함수를 넘기면 "가장 최신 값"을 받아 새 값을 계산한다. 같은 핸들러에서 여러 번 불러도 누적된다.
-      const value = typeof next === 'function' ? next(hook.value) : next;
+      const value = typeof next === 'function' ? next(stateHook.value) : next;
 
       // 값이 같으면 화면도 같으므로 다시 그리지 않는다.
       // 배열·객체는 참조로 비교하므로, 바꿀 때는 [...todos, item]처럼 새 객체를 만들어야 한다.
-      if (Object.is(value, hook.value)) {
+      if (Object.is(value, stateHook.value)) {
         return;
       }
-      hook.value = value;
+      stateHook.value = value;
 
       // setState의 두 번째 역할: 바뀐 상태로 화면을 다시 그린다. (R-P2-05)
       // mount 전에 불렸다면 값만 바꾸고, mount 때 그 값으로 그린다.
-      if (component.root !== null) {
-        component.update();
+      if (component.root === null) {
+        return;
       }
+      // effect 실행 중이면 지금 바로 그리지 않고, 이번 effect들이 끝난 뒤 한 번 다시 그린다.
+      if (component.isRunningEffects) {
+        component.updateRequested = true;
+        return;
+      }
+      component.update();
     };
 
     component.hooks.push(hook);
   }
 
-  const hook = component.hooks[index];
   return [hook.value, hook.setState];
+}
+
+// 화면이 실제 DOM에 반영된 뒤 실행할 일(effect)을 등록한다. (R-P2-06)
+//   deps 생략      → 매 렌더링 뒤 실행
+//   deps []        → mount 뒤 한 번만
+//   deps [a, b]    → a나 b가 이전 렌더링 때와 달라진 렌더링 뒤에만
+// effect가 함수를 돌려주면 cleanup으로 보관했다가, 이 effect를 다시 실행하기 직전에 부른다. (unmount는 없음)
+// 렌더링 중에는 실행하지 않고 모아 두기만 한다. 렌더링은 화면을 "계산"만 하고, DOM이 바뀐 뒤에 effect가 돈다.
+export function useEffect(effect, deps) {
+  const { component, hook: existing } = nextHookSlot('useEffect');
+  checkDeps('useEffect', deps);
+
+  let hook = existing;
+  if (hook === undefined) {
+    // deps는 effect를 "실제로 실행했을 때" 기록한다(runPendingEffects).
+    // 렌더링 중에 기록하면, 그 렌더링이 실패해 effect가 실행되지 않았는데도 다음에 "안 바뀜"으로 보게 된다.
+    hook = { kind: 'useEffect', deps: undefined, hasRun: false, cleanup: null };
+    component.hooks.push(hook);
+  }
+
+  if (!hook.hasRun || depsChanged(hook.deps, deps)) {
+    component.pendingEffects.push({ hook, effect, deps });
+  }
+}
+
+// 계산 결과를 기억해 두고, deps가 바뀐 렌더링에서만 다시 계산한다. (R-P2-06)
+//   const visible = useMemo(() => todos.filter(...), [todos, filter]);
+// 계산은 렌더링 중에 바로 한다. 결과가 이번 화면(VDOM)을 만드는 데 필요하기 때문이다.
+export function useMemo(compute, deps) {
+  const { component, hook: existing } = nextHookSlot('useMemo');
+  checkDeps('useMemo', deps);
+
+  if (existing === undefined) {
+    const hook = { kind: 'useMemo', value: compute(), deps };
+    component.hooks.push(hook);
+    return hook.value;
+  }
+
+  if (depsChanged(existing.deps, deps)) {
+    existing.value = compute();
+    existing.deps = deps;
+  }
+  return existing.value;
+}
+
+function checkDeps(hookName, deps) {
+  if (deps !== undefined && !Array.isArray(deps)) {
+    throw new Error(`${hookName}의 deps는 배열이거나 생략해야 합니다 (받은 값: ${deps})`);
+  }
+}
+
+// deps가 바뀌었는지. 생략(undefined)이면 매번 바뀐 것으로 본다.
+// 각 값은 Object.is로 비교한다. 배열·객체는 참조가 같아야 "안 바뀜"이다(setState와 같은 기준).
+function depsChanged(prevDeps, nextDeps) {
+  if (prevDeps === undefined || nextDeps === undefined) {
+    return true;
+  }
+  if (prevDeps.length !== nextDeps.length) {
+    return true;
+  }
+  return nextDeps.some((value, i) => !Object.is(value, prevDeps[i]));
 }
