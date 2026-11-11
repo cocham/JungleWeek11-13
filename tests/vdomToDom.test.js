@@ -257,3 +257,14 @@ describe('vdomToDom — 이벤트 핸들러 붙이기 (Phase 2)', () => {
     expect(node.outerHTML).toBe('<button class="btn"></button>');
   });
 });
+
+describe('createElementDom — <input>의 value·checked', () => {
+  it('value·checked 속성이 화면 값에도 반영된다', () => {
+    const text = createElementDom({ type: 'element', tag: 'input', attrs: { value: 'hi' }, children: [] });
+    const box = createElementDom({ type: 'element', tag: 'input', attrs: { type: 'checkbox', checked: '' }, children: [] });
+
+    expect(text.value).toBe('hi');
+    expect(box.checked).toBe(true);
+    expect(box.outerHTML).toBe('<input type="checkbox" checked="">');
+  });
+});

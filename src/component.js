@@ -1,7 +1,7 @@
 import { resolve, toSingleNode } from './h.js';
 import { vdomToDom } from './vdomToDom.js';
 import { diff } from './diff.js';
-import { patch } from './patch.js';
+import { patch, syncInputs } from './patch.js';
 
 // 루트 함수형 컴포넌트를 감싸 상태(hooks)를 보관하고 화면을 그리는 클래스. (R-P2-02)
 //
@@ -131,6 +131,8 @@ export class FunctionComponent {
     const patches = diff(this.vdom, newVdom);
     // 루트가 다른 태그로 바뀌면 patch가 새 루트 노드를 돌려주므로 항상 받아 둔다.
     this.root = patch(this.root, patches);
+    // 속성 차이가 없어도 사용자가 클릭·입력으로 바꾼 <input> 화면 값을 상태대로 되돌린다(patch.js의 syncInputs 참고).
+    syncInputs(this.root, newVdom);
     this.vdom = newVdom;
     this.runPendingEffects();
     return patches;

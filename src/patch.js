@@ -1,4 +1,4 @@
-import { vdomToDom } from './vdomToDom.js';
+import { vdomToDom, setAttr, removeAttr } from './vdomToDom.js';
 import { setEvent, removeEvent } from './events.js';
 
 // diff가 만든 patch 목록을 실제 DOM에 반영한다. (R-P1-03)
@@ -24,11 +24,12 @@ export function patch(root, patches) {
     } else if (p.type === 'ATTRS') {
       const element = getNodeByPath(root, p.path);
       // 값이 ''인 속성(disabled 등)도 setAttribute로 "있는" 속성이 된다.
+      // <input>의 value·checked는 화면 값(property)도 함께 맞춘다(vdomToDom.js의 setAttr 참고).
       for (const [name, value] of Object.entries(p.set)) {
-        element.setAttribute(name, value);
+        setAttr(element, name, value);
       }
       for (const name of p.remove) {
-        element.removeAttribute(name);
+        removeAttr(element, name);
       }
     } else if (p.type === 'EVENTS') {
       const element = getNodeByPath(root, p.path);
@@ -93,6 +94,33 @@ function applyRemove(root, p) {
   }
   const node = getNodeByPath(root, p.path);
   node.parentNode.removeChild(node);
+}
+
+// patch를 마친 뒤, 화면의 <input> 값(value·checked 프로퍼티)을 새 VDOM에 맞춘다. (Phase 2, 제어 컴포넌트)
+//
+// ATTRS patch만으로는 부족한 경우가 있다. 브라우저는 클릭하는 순간 checked 프로퍼티를 먼저 바꾸는데,
+// 옛 VDOM과 새 VDOM의 그 자리 속성이 같으면 diff가 patch를 내지 않아 바뀐 화면 값이 그대로 남는다.
+//   예) 진행 중 필터에서 첫 항목(미완료)을 체크 → 그 항목이 빠지고 같은 자리 체크박스에 다음 미완료 항목이 온다.
+//       옛 [0]도 새 [0]도 checked 속성 없음 → patch 없음 → 클릭으로 켜진 체크가 남는다.
+// 그래서 React처럼 "화면 값은 상태(VDOM)를 따른다"를 매 commit마다 보장한다.
+// 대상은 <input>뿐이고, 같은 값이면 대입하지 않는다(setAttr와 같은 이유: 입력 중 커서 유지).
+export function syncInputs(node, vnode) {
+  if (vnode.type !== 'element') {
+    return;
+  }
+  if (vnode.tag === 'input') {
+    const value = vnode.attrs.value ?? '';
+    if ('value' in vnode.attrs && node.value !== value) {
+      node.value = value;
+    }
+    const checked = 'checked' in vnode.attrs;
+    if (node.checked !== checked) {
+      node.checked = checked;
+    }
+  }
+  // patch 직후라 VDOM 자식과 실제 DOM 자식(주석 제외)은 인덱스가 1:1로 맞는다.
+  const children = vdomChildNodes(node);
+  vnode.children.forEach((child, i) => syncInputs(children[i], child));
 }
 
 // VDOM의 path(children 인덱스 목록)를 따라 실제 DOM 노드를 찾는다. path []는 root 자신.

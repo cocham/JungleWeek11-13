@@ -1,0 +1,143 @@
+<!doctype html>
+<html lang="ko">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Mini React · Todo</title>
+    <style>
+      :root {
+        --paper: #faf9f6;
+        --ink: #243040;
+        --muted: #56616c;
+        --line: #d8dcd9;
+        --accent: #23675b;
+        --accent-soft: #e4efec;
+        --danger: #a3322a;
+        --area: #ffffff;
+        --code: #f1f2ef;
+      }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        background: var(--paper);
+        color: var(--ink);
+        font: 16px/1.6 system-ui, sans-serif;
+      }
+      main { max-width: 1100px; margin: auto; padding: 32px 16px 64px; }
+      .page-head { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 8px; }
+      .page-head h1 { font-size: 24px; margin: 0; }
+      .page-head a { color: var(--accent); font-size: 14px; }
+      .lead { color: var(--muted); margin: 4px 0 24px; }
+      .layout { display: grid; grid-template-columns: minmax(0, 3fr) minmax(0, 2fr); gap: 20px; align-items: start; }
+      @media (max-width: 760px) { .layout { grid-template-columns: 1fr; } }
+      .card {
+        padding: 20px;
+        background: var(--area);
+        border: 1px solid var(--line);
+        border-radius: 8px;
+      }
+      .label { display: block; font-size: 14px; font-weight: 700; margin-bottom: 8px; }
+      .hint { font-weight: 400; color: var(--muted); }
+
+      /* ── Todo 앱 (엔진이 그리는 영역) ── */
+      .todo-app h1 { font-size: 20px; margin: 0 0 12px; }
+      .todo-form { display: flex; gap: 8px; }
+      .todo-form input {
+        flex: 1;
+        min-width: 0;
+        font: inherit;
+        padding: 6px 10px;
+        border: 1px solid var(--line);
+        border-radius: 6px;
+      }
+      .todo-form input:focus, .todo-app button:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+      .todo-app button {
+        font: inherit;
+        padding: 6px 14px;
+        border: 1px solid var(--accent);
+        border-radius: 6px;
+        background: var(--area);
+        color: var(--accent);
+        cursor: pointer;
+      }
+      .todo-form button { background: var(--accent); color: #fff; }
+      .todo-app button:disabled { opacity: 0.4; cursor: not-allowed; }
+      .filters { display: flex; gap: 6px; margin: 14px 0 8px; }
+      .filters .filter { padding: 2px 12px; font-size: 14px; border-color: var(--line); color: var(--muted); }
+      .filters .filter.selected { border-color: var(--accent); background: var(--accent-soft); color: var(--accent); font-weight: 700; }
+      .todo-list { list-style: none; margin: 0; padding: 0; }
+      .todo {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 8px;
+        padding: 8px 0;
+        border-bottom: 1px solid var(--line);
+      }
+      .todo label { display: flex; align-items: center; gap: 10px; min-width: 0; overflow-wrap: anywhere; cursor: pointer; }
+      .todo input { width: 18px; height: 18px; flex: none; accent-color: var(--accent); }
+      .todo.done .title { text-decoration: line-through; color: var(--muted); }
+      .todo-app .delete { flex: none; padding: 2px 10px; font-size: 14px; border-color: transparent; color: var(--danger); }
+      .todo-app .delete:hover { border-color: var(--danger); }
+      .empty { margin: 16px 0; color: var(--muted); }
+      .summary { margin: 12px 0 0; font-size: 14px; color: var(--muted); }
+
+      /* ── 엔진 동작 패널 (엔진 밖에서 직접 갱신) ── */
+      .engine dl { display: grid; grid-template-columns: auto 1fr; gap: 4px 12px; margin: 0 0 12px; }
+      .engine dt { color: var(--muted); font-size: 14px; }
+      .engine dd { margin: 0; font-weight: 700; }
+      #patch-summary { margin: 0 0 8px; font-size: 14px; }
+      #patch-log {
+        margin: 0;
+        padding: 8px 8px 8px 28px;
+        min-height: 2.5em;
+        background: var(--code);
+        border-radius: 6px;
+        font: 13px/1.6 ui-monospace, SFMono-Regular, Consolas, monospace;
+        overflow-wrap: anywhere;
+      }
+      #patch-log:empty { display: none; }
+      .engine .note { margin: 12px 0 0; font-size: 13px; color: var(--muted); }
+    </style>
+  </head>
+  <body>
+    <main>
+      <div class="page-head">
+        <h1>Mini React · Todo</h1>
+        <a href="index.html">Phase 1 검증 페이지 →</a>
+      </div>
+      <p class="lead">
+        함수형 컴포넌트와 Hook으로 만든 Todo 앱입니다. 클릭·입력으로 상태가 바뀌면
+        컴포넌트가 새 VDOM을 계산하고, Phase 1의 Diff·Patch가 바뀐 곳만 실제 DOM에 반영합니다.
+      </p>
+
+      <div class="layout">
+        <section class="card">
+          <span class="label">앱 <span class="hint">· FunctionComponent(TodoApp)가 그리는 영역</span></span>
+          <div id="app"></div>
+        </section>
+
+        <aside class="card engine" aria-label="엔진 동작">
+          <span class="label">엔진 동작 <span class="hint">· 화면에 반영할 때마다 갱신</span></span>
+          <dl>
+            <dt>렌더링 횟수</dt>
+            <dd id="render-count">0</dd>
+          </dl>
+          <p id="patch-summary" role="status" aria-live="polite"></p>
+          <ol id="patch-log"></ol>
+          <p class="note">
+            path는 루트(section)에서 children 인덱스를 따라간 위치입니다.
+            setState를 여러 번 불러도 한 번의 렌더링으로 묶입니다(Batching).
+          </p>
+        </aside>
+      </div>
+    </main>
+
+    <!-- ES 모듈은 file://에서 열리지 않으므로 로컬 서버로 연다. (예: npx serve .) -->
+    <script type="module">
+      import { setupTodoApp } from './src/todoApp.js';
+
+      setupTodoApp();
+    </script>
+  </body>
+</html>

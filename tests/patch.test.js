@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { patch, getNodeByPath } from '../src/patch.js';
+import { patch, getNodeByPath, syncInputs } from '../src/patch.js';
 import { diff } from '../src/diff.js';
 import { domToVdom } from '../src/domToVdom.js';
 import { vdomToDom } from '../src/vdomToDom.js';
@@ -518,5 +518,98 @@ describe('patch — EVENTS 적용 (Phase 2)', () => {
     root.childNodes[3].click();
 
     expect(calls).toEqual(['b']);
+  });
+});
+
+describe('patch — <input>의 value·checked 화면 값 맞추기', () => {
+  it('사용자가 입력한 뒤에도 ATTRS value 변경이 입력창 글자(property)에 반영된다', () => {
+    const root = fromHTML('<input value="">');
+    root.value = '사용자가 친 글자'; // 속성은 그대로, 화면 값만 바뀐 상태
+
+    patch(root, [{ type: 'ATTRS', path: [], set: { value: '' }, remove: [] }]);
+    expect(root.value).toBe('');
+
+    patch(root, [{ type: 'ATTRS', path: [], set: { value: 'abc' }, remove: [] }]);
+    expect(root.value).toBe('abc');
+    expect(root.getAttribute('value')).toBe('abc');
+  });
+
+  it('value 속성을 지우면 입력창도 비운다', () => {
+    const root = fromHTML('<input value="a">');
+    root.value = 'typed';
+
+    patch(root, [{ type: 'ATTRS', path: [], set: {}, remove: ['value'] }]);
+
+    expect(root.value).toBe('');
+    expect(root.hasAttribute('value')).toBe(false);
+  });
+
+  it('사용자가 클릭한 체크박스도 checked 추가·삭제를 따른다', () => {
+    const root = fromHTML('<input type="checkbox">');
+    root.click(); // 사용자가 체크 → property만 true
+
+    patch(root, [{ type: 'ATTRS', path: [], set: {}, remove: ['checked'] }]);
+    expect(root.checked).toBe(false);
+
+    root.click(); // 다시 체크
+    root.click(); // 해제 → property false, 속성 없음
+    patch(root, [{ type: 'ATTRS', path: [], set: { checked: '' }, remove: [] }]);
+    expect(root.checked).toBe(true);
+  });
+
+  it('입력 중과 같은 값이면 다시 대입하지 않는다 (커서 유지)', () => {
+    const root = fromHTML('<input value="">');
+    root.value = 'abc';
+    root.setSelectionRange(1, 1);
+
+    patch(root, [{ type: 'ATTRS', path: [], set: { value: 'abc' }, remove: [] }]);
+
+    expect(root.selectionStart).toBe(1);
+  });
+
+  it('<input>이 아닌 요소의 value 속성은 속성만 바꾼다', () => {
+    const root = fromHTML('<ol><li value="3">a</li></ol>');
+
+    patch(root, [{ type: 'ATTRS', path: [0], set: { value: '7' }, remove: [] }]);
+
+    expect(root.firstChild.getAttribute('value')).toBe('7');
+  });
+});
+
+describe('syncInputs — patch 뒤 <input> 화면 값을 새 VDOM에 맞추기 (Phase 2)', () => {
+  it('속성 차이가 없어 patch가 없어도, 클릭으로 켜진 체크를 VDOM대로 끈다', () => {
+    const vdom = domToVdom(fromHTML('<ul><li><input type="checkbox"></li></ul>'));
+    const root = vdomToDom(vdom);
+    const box = root.querySelector('input');
+    box.click(); // 화면 값만 true. 옛·새 VDOM 모두 checked 없음 → diff는 아무것도 내지 않는다.
+
+    expect(diff(vdom, vdom)).toEqual([]);
+    syncInputs(root, vdom);
+
+    expect(box.checked).toBe(false);
+  });
+
+  it('입력창 글자도 VDOM의 value로 되돌리고, 같은 값이면 대입하지 않는다', () => {
+    const vdom = domToVdom(fromHTML('<div><span>x</span><input value="abc"></div>'));
+    const root = vdomToDom(vdom);
+    const input = root.querySelector('input');
+
+    input.value = 'zzz';
+    syncInputs(root, vdom);
+    expect(input.value).toBe('abc');
+
+    input.setSelectionRange(1, 1);
+    syncInputs(root, vdom);
+    expect(input.selectionStart).toBe(1);
+  });
+
+  it('VDOM에 value 속성이 없는 입력창의 글자는 건드리지 않는다', () => {
+    const vdom = domToVdom(fromHTML('<input>'));
+    const root = vdomToDom(vdom);
+    root.value = 'typed';
+
+    syncInputs(root, vdom);
+
+    expect(root.value).toBe('typed');
   });
 });
