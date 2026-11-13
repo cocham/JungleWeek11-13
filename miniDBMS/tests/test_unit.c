@@ -193,6 +193,65 @@ static void test_parse_empty_input(void) {
     CHECK(parse_one(" \n\t\r\n ", &st, &err) == 0);
 }
 
+static void test_parse_comment_only(void) {
+    Statement st;
+    DbError err = {{0}};
+
+    CHECK(parse_one("-- 주석만 있음", &st, &err) == 0);           /* 줄 끝 LF 없이 입력 끝 */
+    CHECK(parse_one("-- a\n-- b\n", &st, &err) == 0);
+    CHECK(parse_one("/* 블록 */", &st, &err) == 0);
+    CHECK(parse_one("/* 여러\n줄 ; 'x' */\n -- 끝\n /**/", &st, &err) == 0);
+    CHECK(parse_one("/* /* 중첩 안 함 */", &st, &err) == 0);       /* 첫 닫는 기호에서 끝남 */
+}
+
+static void test_parse_comments_around_and_inside(void) {
+    const char *sql =
+        "-- 앞 주석; SELECT 아님\n"
+        "/* 앞 블록; */ INSERT /* 중간 */ INTO users -- 줄 끝 주석\n"
+        "(name, /* 컬럼 사이 */ age) VALUES ('a', 1);-- 바로 뒤\n"
+        "SELECT*/**/FROM/*x*/users;/* 뒤 */ -- 마지막";
+    Statement st;
+    DbError err = {{0}};
+    size_t pos = 0;
+
+    CHECK(parser_next(sql, &pos, &st, &err) == 1);
+    CHECK(st.kind == STMT_INSERT && st.name != NULL && strcmp(st.name, "a") == 0 && st.age == 1);
+    statement_free(&st);
+    CHECK(parser_next(sql, &pos, &st, &err) == 1);
+    CHECK(st.kind == STMT_SELECT);
+    statement_free(&st);
+    CHECK(parser_next(sql, &pos, &st, &err) == 0);
+
+    /* 음수는 여전히 정수 토큰, -- 만 주석이다. */
+    CHECK(parse_one("INSERT INTO users (name, age) VALUES ('a', -1);", &st, &err) == 1);
+    CHECK(st.age == -1);
+    statement_free(&st);
+}
+
+static void test_parse_comment_symbols_in_string(void) {
+    Statement st;
+    DbError err = {{0}};
+
+    CHECK(parse_one("INSERT INTO users (name, age) VALUES ('a--b /* c */ d', 1);", &st, &err) ==
+          1);
+    CHECK(st.name != NULL && strcmp(st.name, "a--b /* c */ d") == 0);
+    statement_free(&st);
+
+    CHECK(parse_one("INSERT INTO users (name, age) VALUES ('/* 열기만', 2); -- '닫기 */'", &st,
+                    &err) == 1);
+    CHECK(st.name != NULL && strcmp(st.name, "/* 열기만") == 0 && st.age == 2);
+    statement_free(&st);
+}
+
+static void test_parse_comment_errors(void) {
+    EXPECT_PARSE_ERROR("/* 닫히지 않음", "블록 주석");
+    EXPECT_PARSE_ERROR("SELECT * FROM users /* 세미콜론이 주석 안; ", "블록 주석");
+    /* 중첩 미지원: 안쪽 닫는 기호에서 주석이 끝나 남은 닫는 기호가 SQL로 읽힌다. */
+    EXPECT_PARSE_ERROR("/* a /* b */ */ SELECT * FROM users;", "INSERT 또는 SELECT");
+    EXPECT_PARSE_ERROR("SELECT * FROM users -- 세미콜론이 주석 안;", "세미콜론");
+    EXPECT_PARSE_ERROR("SELECT * FROM users / 1;", "알 수 없는 문자 '/'");
+}
+
 static void test_parse_next_statement_error_isolated(void) {
     /* 첫 문장은 성공해야 하고, 두 번째 문장의 잘못된 문자는 두 번째에서만 보고된다. */
     const char *sql = "SELECT * FROM users; SELECT # FROM users;";
@@ -509,6 +568,10 @@ int main(int argc, char **argv) {
     test_parse_string_special_and_multiline();
     test_parse_select_and_sequence();
     test_parse_empty_input();
+    test_parse_comment_only();
+    test_parse_comments_around_and_inside();
+    test_parse_comment_symbols_in_string();
+    test_parse_comment_errors();
     test_parse_next_statement_error_isolated();
     test_parse_errors();
 

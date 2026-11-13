@@ -60,14 +60,50 @@ static char to_lower(char c) { return (c >= 'A' && c <= 'Z') ? (char)(c - 'A' + 
 
 /* ---------- Lexer ---------- */
 
+/*
+ * 공백과 주석을 건너뛴 위치를 *pos에 담는다. 주석은 공백과 똑같이 취급한다.
+ *   -- 부터 줄 끝(LF)까지, 또는 입력 끝까지
+ *   / * 부터 * / 까지. 중첩은 지원하지 않는다(안쪽 / * 는 그냥 주석 내용)
+ * 문자열 안의 주석 기호는 여기까지 오지 않는다: 토큰 사이에서만 호출되기 때문이다.
+ */
+static int skip_space_and_comments(Parser *p, size_t *pos) {
+    const char *s = p->sql;
+    size_t i = *pos;
+
+    for (;;) {
+        if (is_space(s[i])) {
+            i++;
+        } else if (s[i] == '-' && s[i + 1] == '-') {
+            i += 2;
+            while (s[i] != '\0' && s[i] != '\n') {
+                i++;
+            }
+        } else if (s[i] == '/' && s[i + 1] == '*') {
+            i += 2;
+            while (!(s[i] == '*' && s[i + 1] == '/')) {
+                if (s[i] == '\0') {
+                    db_error_set(p->err, "블록 주석이 닫히지 않았습니다 ('*/' 누락)");
+                    return -1;
+                }
+                i++;
+            }
+            i += 2;
+        } else {
+            break;
+        }
+    }
+    *pos = i;
+    return 0;
+}
+
 static int next_token(Parser *p) {
     const char *s = p->sql;
     size_t i = p->pos;
     Token *t = &p->cur;
     char c;
 
-    while (is_space(s[i])) {
-        i++;
+    if (skip_space_and_comments(p, &i) != 0) {
+        return -1;
     }
     c = s[i];
     t->text = s + i;

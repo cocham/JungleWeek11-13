@@ -133,6 +133,42 @@ def a4_utf8_bom_is_skipped(env):
     expect_ok(env.run(b"\xef\xbb\xbf" + u("SELECT * FROM users;")), HEADER)
 
 
+# ---------- SQL 주석 ----------
+
+@test
+def comment_only_file(env):
+    expect_ok(env.run("-- 주석만 있는 파일\n/* 블록\n주석; */\n-- 끝"), b"")
+    eq(env.data(), b"", "저장 파일")
+
+
+@test
+def comments_before_between_after(env):
+    sql = (
+        "-- 앞 주석\n"
+        "/* 앞 블록 */ INSERT INTO users (name, age) -- 줄 끝\n"
+        "VALUES (/* 값 앞 */ 'a', 1); /* 문장 사이 */\n"
+        "-- INSERT INTO users (name, age) VALUES ('주석 처리됨', 2);\n"
+        "/* INSERT INTO users (name, age) VALUES ('블록 처리됨', 3); */\n"
+        "SELECT * FROM users; -- 뒤 주석"
+    )
+    expect_ok(env.run(sql), b"INSERT 1\n" + HEADER + b"1\ta\t1\n")
+    eq(env.data(), b"1\ta\t1\n", "주석 안의 INSERT는 실행되지 않음")
+
+
+@test
+def comment_symbols_inside_string_kept(env):
+    expect_ok(env.run("INSERT INTO users (name, age) VALUES ('a--b /* c */ d', 1);"
+                      "SELECT * FROM users;"),
+              b"INSERT 1\n" + HEADER + b"1\ta--b /* c */ d\t1\n")
+
+
+@test
+def unterminated_block_comment(env):
+    sql = "INSERT INTO users (name, age) VALUES ('a', 1);\n/* 닫히지 않음\nSELECT * FROM users;"
+    expect_fail(env.run(sql), "문장 2", "블록 주석", stdout=b"INSERT 1\n")
+    eq(env.data(), b"1\ta\t1\n", "앞 문장은 유지")
+
+
 # ---------- A5: 잘못된 SQL·컬럼·타입·범위 ----------
 
 A5_CASES = [
