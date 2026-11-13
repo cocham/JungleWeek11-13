@@ -2,6 +2,7 @@
 #define MINIDB_PARSER_H
 
 #include <stddef.h>
+#include <stdint.h>
 
 #include "common.h"
 
@@ -9,10 +10,15 @@
 
 typedef enum { STMT_INSERT, STMT_SELECT } StmtKind;
 
+/* SELECT의 WHERE 조건: 없음, id = 값, age = 값 */
+typedef enum { WHERE_NONE, WHERE_ID, WHERE_AGE } WhereKind;
+
 typedef struct {
     StmtKind kind;
-    char *name; /* INSERT: 따옴표를 풀어낸 문자열. Statement가 소유(malloc) */
-    int age;    /* INSERT */
+    char *name;          /* INSERT: 따옴표를 풀어낸 문자열. Statement가 소유(malloc) */
+    int age;             /* INSERT */
+    WhereKind where;     /* SELECT */
+    int64_t where_value; /* SELECT: where가 WHERE_NONE이 아닐 때 비교할 값 */
 } Statement;
 
 /*

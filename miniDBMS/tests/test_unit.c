@@ -252,6 +252,62 @@ static void test_parse_comment_errors(void) {
     EXPECT_PARSE_ERROR("SELECT * FROM users / 1;", "알 수 없는 문자 '/'");
 }
 
+static void expect_where(const char *sql, WhereKind kind, int64_t value) {
+    Statement st;
+    DbError err = {{0}};
+    int r = parse_one(sql, &st, &err);
+
+    CHECK(r == 1);
+    CHECK(r == 1 && st.kind == STMT_SELECT && st.where == kind && st.where_value == value);
+    if (r != 1 || st.where != kind || st.where_value != value) {
+        fprintf(stderr, "    SQL: %s\n    메시지: %s\n", sql, err.msg);
+    }
+    if (r == 1) {
+        statement_free(&st);
+    }
+}
+
+static void test_parse_where(void) {
+    expect_where("SELECT * FROM users;", WHERE_NONE, 0);
+    expect_where("SELECT * FROM users WHERE id = 1;", WHERE_ID, 1);
+    expect_where("select * from users where ID=42;", WHERE_ID, 42);
+    expect_where("SELECT * FROM users WHERE age = 0;", WHERE_AGE, 0);
+    expect_where("SELECT * FROM users\nWHERE\n  Age\n  =\n  150\n;", WHERE_AGE, 150);
+    expect_where("SELECT * FROM users WHERE /* c */ id -- x\n = /* y */ 7;", WHERE_ID, 7);
+    /* 범위 밖 값은 오류가 아니라 일치 없음으로 처리하도록 그대로 담는다. */
+    expect_where("SELECT * FROM users WHERE id = -1;", WHERE_ID, -1);
+    expect_where("SELECT * FROM users WHERE age = 151;", WHERE_AGE, 151);
+    expect_where("SELECT * FROM users WHERE id = 9223372036854775807;", WHERE_ID, INT64_MAX);
+    expect_where("SELECT * FROM users WHERE id = -9223372036854775808;", WHERE_ID, INT64_MIN);
+}
+
+static void test_parse_where_errors(void) {
+    EXPECT_PARSE_ERROR("SELECT * FROM users WHERE;", "조건 컬럼 이름");
+    EXPECT_PARSE_ERROR("SELECT * FROM users WHERE id;", "'='");
+    EXPECT_PARSE_ERROR("SELECT * FROM users WHERE id =;", "정수 값");
+    EXPECT_PARSE_ERROR("SELECT * FROM users WHERE id = 1", "세미콜론");
+    EXPECT_PARSE_ERROR("SELECT * FROM users WHERE id 1;", "'='");
+    EXPECT_PARSE_ERROR("SELECT * FROM users WHERE 1 = id;", "조건 컬럼 이름");
+    EXPECT_PARSE_ERROR("SELECT * FROM users WHERE name = 'a';", "id 또는 age");
+    EXPECT_PARSE_ERROR("SELECT * FROM users WHERE email = 1;", "컬럼 'email'");
+    EXPECT_PARSE_ERROR("SELECT * FROM users WHERE age > 1;", "'='");
+    EXPECT_PARSE_ERROR("SELECT * FROM users WHERE age >= 1;", ">=");
+    EXPECT_PARSE_ERROR("SELECT * FROM users WHERE age <> 1;", "<>");
+    EXPECT_PARSE_ERROR("SELECT * FROM users WHERE age != 1;", "!=");
+    EXPECT_PARSE_ERROR("SELECT * FROM users WHERE age = '1';", "정수 값이 필요");
+    EXPECT_PARSE_ERROR("SELECT * FROM users WHERE id = NULL;", "정수 값이 필요");
+    EXPECT_PARSE_ERROR("SELECT * FROM users WHERE id = 1.5;", "알 수 없는 문자");
+    EXPECT_PARSE_ERROR("SELECT * FROM users WHERE id = 1 AND age = 2;", "AND/OR");
+    EXPECT_PARSE_ERROR("SELECT * FROM users WHERE id = 1 or id = 2;", "AND/OR");
+    EXPECT_PARSE_ERROR("SELECT * FROM users WHERE id = 1 = 2;", "세미콜론");
+    EXPECT_PARSE_ERROR("SELECT * FROM users WHERE id = 9223372036854775808;", "64비트");
+    EXPECT_PARSE_ERROR("SELECT * FROM users WHERE id = -9223372036854775809;", "64비트");
+    EXPECT_PARSE_ERROR("SELECT * FROM users WHERE age = 123456789012345678901234567890123;",
+                       "64비트");
+    EXPECT_PARSE_ERROR("SELECT * FROM users WHERE id = 1 WHERE age = 2;", "세미콜론");
+    EXPECT_PARSE_ERROR("INSERT INTO users (name, age) VALUES ('a', 1) WHERE id = 1;", "세미콜론");
+}
+
 static void test_parse_next_statement_error_isolated(void) {
     /* 첫 문장은 성공해야 하고, 두 번째 문장의 잘못된 문자는 두 번째에서만 보고된다. */
     const char *sql = "SELECT * FROM users; SELECT # FROM users;";
@@ -272,7 +328,6 @@ static void test_parse_errors(void) {
     EXPECT_PARSE_ERROR(";", "INSERT 또는 SELECT");
     EXPECT_PARSE_ERROR("UPDATE users SET age = 1;", "INSERT 또는 SELECT");
     EXPECT_PARSE_ERROR("SELECT * FROM orders;", "테이블 'orders'");
-    EXPECT_PARSE_ERROR("SELECT * FROM users WHERE id = 1;", "WHERE");
     EXPECT_PARSE_ERROR("SELECT name FROM users;", "SELECT *");
     EXPECT_PARSE_ERROR("SELECT * users;", "FROM");
     EXPECT_PARSE_ERROR("INSERT users (name, age) VALUES ('a', 1);", "INTO");
@@ -467,7 +522,7 @@ static int count_insert(int64_t id, void *ctx) {
 
 static void expect_exec_error(Table *t, const char *name, int age, const char *needle) {
     char buf[300];
-    Statement st;
+    Statement st = {STMT_INSERT, NULL, 0, WHERE_NONE, 0};
     DbError err = {{0}};
 
     snprintf(buf, sizeof buf, "%s", name);
@@ -508,7 +563,7 @@ static void test_executor_validation(void) {
 
     /* 경계값은 성공한다. */
     {
-        Statement st;
+        Statement st = {STMT_INSERT, NULL, 0, WHERE_NONE, 0};
         int64_t last = 0;
         ResultSink sink = {count_insert, NULL, &last};
 
@@ -531,8 +586,8 @@ static void test_executor_insert_select(void) {
     int64_t last = 0;
     char kim[] = "kim";
     char lee[] = "lee";
-    Statement ins = {STMT_INSERT, kim, 20};
-    Statement sel = {STMT_SELECT, NULL, 0};
+    Statement ins = {STMT_INSERT, kim, 20, WHERE_NONE, 0};
+    Statement sel = {STMT_SELECT, NULL, 0, WHERE_NONE, 0};
     ResultSink sink;
 
     memset(&c, 0, sizeof c);
@@ -555,6 +610,82 @@ static void test_executor_insert_select(void) {
     CHECK(table_close(t, &err) == 0);
 }
 
+/* WHERE 조건으로 조회한 id 목록을 ids에 담고 개수를 돌려준다. */
+static int select_where(Table *t, WhereKind kind, int64_t value, int64_t *ids) {
+    Statement sel = {STMT_SELECT, NULL, 0, WHERE_NONE, 0};
+    ResultSink sink = {NULL, collect_row, NULL};
+    DbError err = {{0}};
+    Collected c;
+    int i;
+
+    memset(&c, 0, sizeof c);
+    sel.where = kind;
+    sel.where_value = value;
+    sink.ctx = &c;
+    CHECK(executor_run(t, &sel, &sink, &err) == 0);
+    for (i = 0; i < c.count && i < 8; i++) {
+        ids[i] = c.ids[i];
+    }
+    return c.count;
+}
+
+static void test_executor_where(void) {
+    const char *dir = fresh_dir("exec_where");
+    const char data[] = "1\ta\t25\n2\tb\t30\n3\tc\t25\n5\td\t40\n6\te\t25\n";
+    Table *t = NULL;
+    DbError err = {{0}};
+    int64_t ids[8];
+
+    write_file(dir, data, sizeof data - 1); /* id 4가 빠진 파일(증가 순서만 요구) */
+    CHECK(table_open(dir, &t, &err) == 0);
+
+    /* id 조건: 한 건, 없음(빈 id·범위 밖) */
+    CHECK(select_where(t, WHERE_ID, 1, ids) == 1 && ids[0] == 1);
+    CHECK(select_where(t, WHERE_ID, 6, ids) == 1 && ids[0] == 6);
+    CHECK(select_where(t, WHERE_ID, 4, ids) == 0);
+    CHECK(select_where(t, WHERE_ID, 0, ids) == 0);
+    CHECK(select_where(t, WHERE_ID, -1, ids) == 0);
+    CHECK(select_where(t, WHERE_ID, INT64_MAX, ids) == 0);
+
+    /* age 조건: 여러 건은 저장 순서대로, 한 건, 없음 */
+    CHECK(select_where(t, WHERE_AGE, 25, ids) == 3 && ids[0] == 1 && ids[1] == 3 && ids[2] == 6);
+    CHECK(select_where(t, WHERE_AGE, 40, ids) == 1 && ids[0] == 5);
+    CHECK(select_where(t, WHERE_AGE, 0, ids) == 0);
+    CHECK(select_where(t, WHERE_AGE, 151, ids) == 0);
+    /* int 범위를 넘는 값이 잘려서 25와 같아지지 않아야 한다 */
+    CHECK(select_where(t, WHERE_AGE, 25 + ((int64_t)1 << 32), ids) == 0);
+
+    /* 조건 없음은 전체 */
+    CHECK(select_where(t, WHERE_NONE, 0, ids) == 5);
+    CHECK(table_close(t, &err) == 0);
+}
+
+static void test_executor_where_scans_whole_file(void) {
+    /* 선형 탐색은 일치하는 행을 찾은 뒤에도 끝까지 읽으므로 뒤쪽 손상도 오류로 보고한다. */
+    const char *dir = fresh_dir("exec_where_corrupt");
+    const char good[] = "1\ta\t25\n";
+    const char bad[] = "1\ta\t25\n2\tb\n";
+    Table *t = NULL;
+    DbError err = {{0}};
+    Statement sel = {STMT_SELECT, NULL, 0, WHERE_ID, 1};
+    char path[600];
+    FILE *fp;
+
+    write_file(dir, good, sizeof good - 1);
+    CHECK(table_open(dir, &t, &err) == 0);
+    /* 열린 뒤 다른 경로로 손상된 줄이 덧붙은 상황 */
+    snprintf(path, sizeof path, "%s/users.tsv", dir);
+    fp = fopen(path, "wb");
+    CHECK(fp != NULL);
+    if (fp != NULL) {
+        fwrite(bad, 1, sizeof bad - 1, fp);
+        fclose(fp);
+    }
+    CHECK(executor_run(t, &sel, NULL, &err) == -1);
+    CHECK(strstr(err.msg, "2번째 줄") != NULL);
+    CHECK(table_close(t, &err) == 0);
+}
+
 int main(int argc, char **argv) {
     if (argc != 2) {
         fprintf(stderr, "사용법: test_unit <임시 디렉터리>\n");
@@ -572,6 +703,8 @@ int main(int argc, char **argv) {
     test_parse_comments_around_and_inside();
     test_parse_comment_symbols_in_string();
     test_parse_comment_errors();
+    test_parse_where();
+    test_parse_where_errors();
     test_parse_next_statement_error_isolated();
     test_parse_errors();
 
@@ -585,6 +718,8 @@ int main(int argc, char **argv) {
 
     test_executor_validation();
     test_executor_insert_select();
+    test_executor_where();
+    test_executor_where_scans_whole_file();
 
     printf("단위 테스트: %d개 검사 중 %d개 실패\n", g_checks, g_failures);
     return g_failures == 0 ? 0 : 1;

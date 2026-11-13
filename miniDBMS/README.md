@@ -7,8 +7,11 @@ C로 SQL 파일을 실행하고 데이터를 파일에 저장하는 CLI를 만�
 1. [개발 명세](docs/spec.md): 무엇을 만들고 어떻게 확인하는가
 2. [설계와 결정](docs/design.md): 처리 흐름, 저장 방식, 구현 전 결정
 3. [작업 목록](docs/tasks.md): 구현 단위와 검증 기준
+4. [구현설명서](docs/implementation.md): 전체 흐름에서 INSERT·SELECT 코드 따라가기
 
-현재 상태: **DB-P1-01(기본 저장·조회) 구현·테스트 완료, Codex 검증 대기.** WHERE는 2단위에서 지원한다.
+현재 상태: **Phase 1 구현·테스트 완료(DB-P1-01, DB-P1-C01 SQL 주석, DB-P1-02 조건 조회), DB-P1-02 Codex 검증 대기.**
+
+지원 SQL: `INSERT INTO users (name, age) VALUES (...)`, `SELECT * FROM users [WHERE id = 정수 | WHERE age = 정수]`, `--`·`/* */` 주석. 조건 조회는 선형 탐색이다.
 
 ## 빌드와 실행 (Windows, TDM-GCC)
 
@@ -38,7 +41,7 @@ docker run --rm -v "%cd%:/src" -w /src gcc:13 make sanitize
 |---|---|
 | src/main.c | CLI: 인자·SQL 파일 읽기, 문장 순차 실행, 결과·오류 출력, 종료 코드 |
 | src/parser.c | Lexer + 재귀 하강 파서: SQL 텍스트 → Statement |
-| src/executor.c | 값 검증 후 Storage에 저장·조회 요청, 결과는 콜백으로 전달 |
+| src/executor.c | 값 검증 후 Storage에 저장·조회 요청. WHERE는 조회 콜백 앞의 필터로 검사, 결과는 콜백으로 전달 |
 | src/storage.c | users.tsv 열기·검증·순차 읽기·추가, 다음 ID 복원 |
 | tests/test_unit.c | Parser·Storage·Executor 단위 테스트 |
 | tests/cli_test.py | 실제 프로세스를 실행하는 CLI 통합 테스트 |

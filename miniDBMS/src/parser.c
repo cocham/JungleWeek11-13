@@ -11,7 +11,7 @@
  * 재귀 하강 파서(parse_insert / parse_select)가 토큰 순서를 문법과 맞춰 본다.
  *
  * INSERT INTO users ( 컬럼 [, 컬럼] ) VALUES ( 값 [, 값] ) ;
- * SELECT * FROM users ;
+ * SELECT * FROM users [ WHERE id|age = 정수 ] ;
  */
 
 typedef enum {
@@ -24,7 +24,8 @@ typedef enum {
     TOK_COMMA,
     TOK_SEMI,
     TOK_STAR,
-    TOK_EQ
+    TOK_EQ,
+    TOK_CMP /* < > <= >= <> != : WHERE에서 거부하기 위해서만 쓴다 */
 } TokKind;
 
 typedef struct {
@@ -121,6 +122,14 @@ static int next_token(Parser *p) {
     case ';': t->kind = TOK_SEMI; p->pos = i + 1; return 0;
     case '*': t->kind = TOK_STAR; p->pos = i + 1; return 0;
     case '=': t->kind = TOK_EQ; p->pos = i + 1; return 0;
+    case '<':
+    case '>':
+    case '!':
+        /* 지원하지 않는 비교 연산자도 토큰으로 받아 "'='만 지원" 오류를 낼 수 있게 한다. */
+        t->kind = TOK_CMP;
+        t->len = (s[i + 1] == '=' || (c == '<' && s[i + 1] == '>')) ? 2 : 1;
+        p->pos = i + t->len;
+        return 0;
     default: break;
     }
 
@@ -298,6 +307,30 @@ static int parse_int_value(Parser *p, int *out) {
     return 0;
 }
 
+/* WHERE 비교값: 64비트 정수 범위면 받는다. 0~150 밖의 age, 0 이하의 id는 일치 없음일 뿐 오류가 아니다. */
+static int parse_where_value(Parser *p, const char *col, int64_t *out) {
+    char buf[32];
+    char *end;
+    long long v;
+    int shown = p->cur.len > 24 ? 24 : (int)p->cur.len;
+
+    if (p->cur.len >= sizeof buf) {
+        db_error_set(p->err, "%s 조건 값 %.*s...이(가) 64비트 정수 범위를 벗어났습니다", col,
+                     shown, p->cur.text);
+        return -1;
+    }
+    memcpy(buf, p->cur.text, p->cur.len);
+    buf[p->cur.len] = '\0';
+    errno = 0;
+    v = strtoll(buf, &end, 10);
+    if (errno == ERANGE || *end != '\0') { /* long long은 64비트 이상이 보장된다 */
+        db_error_set(p->err, "%s 조건 값 %s이(가) 64비트 정수 범위를 벗어났습니다", col, buf);
+        return -1;
+    }
+    *out = (int64_t)v;
+    return 0;
+}
+
 /* ---------- 문장별 파서 ---------- */
 
 static int parse_columns(Parser *p, int cols[COL_COUNT], size_t *ncols) {
@@ -331,6 +364,11 @@ static int parse_columns(Parser *p, int cols[COL_COUNT], size_t *ncols) {
         }
         seen[col] = 1;
         cols[(*ncols)++] = col;
+        /*
+            cols[(*ncols)++] = col;를 했을 때 생성 방식
+            (name, age) → cols = [COL_NAME, COL_AGE]
+            (age, name) → cols = [COL_AGE, COL_NAME]
+        */
         if (advance(p) != 0) {
             return -1;
         }
@@ -367,7 +405,7 @@ static int parse_values(Parser *p, const int cols[COL_COUNT], size_t ncols, Stat
             db_error_set(p->err, "값이 컬럼보다 많습니다 (컬럼 %u개)", (unsigned)ncols);
             return -1;
         }
-        if (cols[nvals] == COL_NAME) {
+        if (cols[nvals] == COL_NAME) { /* 문자열을 읽어서 out->name에 저장 */
             if (p->cur.kind != TOK_STRING) {
                 db_error_set(p->err, "name에는 작은따옴표로 감싼 문자열 값이 필요합니다");
                 return -1;
@@ -376,7 +414,7 @@ static int parse_values(Parser *p, const int cols[COL_COUNT], size_t ncols, Stat
             if (out->name == NULL) {
                 return -1;
             }
-        } else {
+        } else { /* 정수를 읽어서 out->age에 저장 */
             if (p->cur.kind != TOK_INT) {
                 db_error_set(p->err, "age에는 정수 값이 필요합니다");
                 return -1;
@@ -402,7 +440,7 @@ static int parse_values(Parser *p, const int cols[COL_COUNT], size_t ncols, Stat
     }
     if (nvals < ncols) {
         db_error_set(p->err, "값이 컬럼보다 적습니다 (컬럼 %u개, 값 %u개)",
-                     (unsigned)ncols, (unsigned)nvals);
+                    (unsigned)ncols, (unsigned)nvals);
         return -1;
     }
     return advance(p); /* ')' 소비 */
@@ -424,6 +462,60 @@ static int parse_insert(Parser *p, Statement *out) {
     return expect_end(p);
 }
 
+/* WHERE id|age = 정수. 현재 토큰이 WHERE인 상태에서 호출한다. */
+static int parse_where(Parser *p, Statement *out) {
+    const char *col;
+    int shown;
+
+    if (advance(p) != 0) { /* WHERE */
+        return -1;
+    }
+    if (p->cur.kind != TOK_IDENT) {
+        return syntax_error(p, "조건 컬럼 이름");
+    }
+    if (tok_is(&p->cur, "id")) {
+        out->where = WHERE_ID;
+        col = "id";
+    } else if (tok_is(&p->cur, "age")) {
+        out->where = WHERE_AGE;
+        col = "age";
+    } else {
+        shown = p->cur.len > 64 ? 64 : (int)p->cur.len;
+        if (tok_is(&p->cur, "name")) {
+            db_error_set(p->err, "WHERE 조건은 id 또는 age만 지원합니다 (name 조건은 지원하지 않음)");
+        } else {
+            db_error_set(p->err, "컬럼 '%.*s'이(가) 존재하지 않습니다", shown, p->cur.text);
+        }
+        return -1;
+    }
+    if (advance(p) != 0) {
+        return -1;
+    }
+    if (p->cur.kind == TOK_CMP) {
+        db_error_set(p->err, "WHERE 조건은 '=' 비교만 지원합니다 (현재: %.*s)",
+                     (int)p->cur.len, p->cur.text);
+        return -1;
+    }
+    if (expect(p, TOK_EQ, "'='") != 0) {
+        return -1;
+    }
+    if (p->cur.kind != TOK_INT) {
+        if (p->cur.kind == TOK_STRING || p->cur.kind == TOK_IDENT) {
+            db_error_set(p->err, "%s 조건에는 정수 값이 필요합니다", col);
+            return -1;
+        }
+        return syntax_error(p, "정수 값");
+    }
+    if (parse_where_value(p, col, &out->where_value) != 0 || advance(p) != 0) {
+        return -1;
+    }
+    if (tok_is(&p->cur, "and") || tok_is(&p->cur, "or")) {
+        db_error_set(p->err, "WHERE 조건은 하나만 지원합니다 (AND/OR 복합 조건은 지원하지 않음)");
+        return -1;
+    }
+    return 0;
+}
+
 static int parse_select(Parser *p, Statement *out) {
     out->kind = STMT_SELECT;
     if (advance(p) != 0) { /* SELECT */
@@ -441,8 +533,7 @@ static int parse_select(Parser *p, Statement *out) {
         parse_table(p) != 0) {
         return -1;
     }
-    if (tok_is(&p->cur, "where")) {
-        db_error_set(p->err, "WHERE 조건은 아직 지원하지 않습니다");
+    if (tok_is(&p->cur, "where") && parse_where(p, out) != 0) {
         return -1;
     }
     return expect_end(p);
@@ -457,6 +548,8 @@ int parser_next(const char *sql, size_t *pos, Statement *out, DbError *err) {
     out->kind = STMT_SELECT;
     out->name = NULL;
     out->age = 0;
+    out->where = WHERE_NONE;
+    out->where_value = 0;
 
     p.sql = sql;
     p.pos = *pos;
