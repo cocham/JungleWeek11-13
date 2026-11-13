@@ -15,7 +15,7 @@ C로 SQL 파일을 실행하고 데이터를 파일에 저장하는 CLI를 만�
 ```text
 mingw32-make                 # build/minidb.exe
 mingw32-make test            # 단위 테스트 + CLI 통합 테스트
-build\minidb.exe --data-dir data examplesasic.sql
+build\minidb.exe --data-dir data examples/basic.sql
 ```
 
 ```text

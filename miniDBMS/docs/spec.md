@@ -15,7 +15,7 @@
 flowchart TD
     SQL["SQL 파일<br/>INSERT / SELECT"] --> CLI["CLI<br/>파일을 읽고 문장을 순서대로 전달"]
     CLI --> PARSE["Parser<br/>SQL 텍스트 → 구조화된 명령"]
-    PARSE --> EXEC["Executor<br/>테이블·컬럼·값 검증"]
+    PARSE --> EXEC["Executor<br/>값 검증"]
     EXEC --> KIND{"명령 종류"}
     KIND -->|INSERT| INSERT["자동 ID 부여<br/>레코드 한 건 추가"]
     KIND -->|SELECT| SELECT["레코드를 순서대로 읽기<br/>조건이 있으면 일치 여부 검사"]
